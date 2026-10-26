@@ -1,0 +1,10 @@
+# Tested runtime versions. Install with: python -m pip install -r requirements.txt
+PySide6-Essentials==6.12.0
+shiboken6==6.12.0
+Pillow==12.3.0
+numpy==2.5.4
+psd-tools[composite]==1.26.0
+pypdfium2==5.14.0
+attrs==26.1.0
+aggdraw==1.4.1
+scipy==1.18.1
