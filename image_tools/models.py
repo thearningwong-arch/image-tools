@@ -7,6 +7,7 @@ from PIL import Image
 class RenderedPage:
     image: Image.Image
     page: int = 1
+    label: str = ""
 
 
 @dataclass
@@ -46,3 +47,4 @@ class SearchResult:
     height: int
     file_size: int
     modified_ns: int
+    page_label: str = ""

@@ -120,12 +120,55 @@ def _photoshop(path: Path) -> Iterator[RenderedPage]:
     _check_photoshop_header(path)
     try:
         from psd_tools import PSDImage
+        from psd_tools.api.layers import Artboard
     except ImportError as exc:
         raise RenderError("缺少 PSD / PSB 预览组件 psd-tools，请重新安装项目依赖") from exc
     with warnings.catch_warnings():
         warnings.simplefilter("error", Image.DecompressionBombWarning)
         psd = PSDImage.open(path)
         _check_size(psd.width, psd.height)
+        artboards = [layer for layer in psd.descendants()
+                     if isinstance(layer, Artboard) and layer.is_visible()]
+        if artboards:
+            # Photoshop's merged preview preserves effects that the layer
+            # compositor may not support. Crop it at full resolution BEFORE
+            # shrinking the overview, so small boards do not lose their detail.
+            try:
+                merged = psd.topil()
+            except (ValueError, OSError, NotImplementedError):
+                merged = None
+            page = 1
+            if merged is not None:
+                yield RenderedPage(_normalize(merged), page, "整图预览")
+                page += 1
+            for number, board in enumerate(artboards, start=1):
+                label = f"画板 {number}：{board.name}"
+                try:
+                    left, top, right, bottom = board.bbox
+                    _check_size(right - left, bottom - top)
+                    overlaps = any(
+                        other is not board
+                        and left < other.bbox[2] and right > other.bbox[0]
+                        and top < other.bbox[3] and bottom > other.bbox[1]
+                        for other in artboards
+                    )
+                    if merged is not None and merged.size == psd.size \
+                            and not overlaps \
+                            and 0 <= left < right <= merged.width \
+                            and 0 <= top < bottom <= merged.height:
+                        image = merged.crop((left, top, right, bottom))
+                    else:
+                        # Boards may overlap or extend outside the canvas, or
+                        # the file may have been saved without a merged preview.
+                        # Its own viewport preserves the background and margins.
+                        image = board.composite(viewport=board.bbox)
+                    if image is None:
+                        raise RenderError("没有可用的画板预览")
+                    yield RenderedPage(_normalize(image), page, label)
+                    page += 1
+                except Exception as exc:
+                    raise RenderError(f"{label} 无法生成预览：{exc}") from exc
+            return
         image = psd.topil()
         if image is None:
             image = psd.composite()
@@ -207,8 +250,9 @@ def _postscript(path: Path) -> Iterator[RenderedPage]:
 def render_pages(path: Path, max_pages: int = 20) -> Iterator[RenderedPage]:
     """Yield previews, including at most max_pages PDF/TIFF pages.
 
-    GIF uses its first frame. PSD/PSB use the document composite, not individual
-    layers. AI must contain PDF data or a Ghostscript-readable PostScript body.
+    GIF uses its first frame. PSD/PSB include the available document composite
+    and every visible artboard (not limited by max_pages); ordinary layers are
+    not separate search targets. AI must contain PDF or PostScript data.
     """
     path = Path(path)
     if max_pages < 1:

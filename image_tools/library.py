@@ -21,6 +21,7 @@ from .models import LibraryStats, ScanProgress, ScanReport, SearchResult
 from .rendering import RenderError, SUPPORTED_EXTENSIONS, render_pages
 
 _INDEX_VERSION = 1
+_PHOTOSHOP_INDEX_VERSION = 1
 _CHUNK_SIZE = 1024 * 1024
 
 
@@ -115,9 +116,19 @@ class Library:
                     descriptor TEXT NOT NULL,
                     pixel_digest TEXT NOT NULL,
                     thumbnail_path TEXT NOT NULL,
+                    label TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(file_id, page)
                 );
             """)
+            # Additive migration: retain the user's existing files and roots.
+            if "label" not in {row[1] for row in db.execute("PRAGMA table_info(pages)")}:
+                with db:
+                    db.execute("ALTER TABLE pages ADD COLUMN label TEXT NOT NULL DEFAULT ''")
+
+    def _file_signature(self, path: Path) -> str:
+        if path.suffix.lower() in {".psd", ".psb"}:
+            return f"{self.signature}:artboards={_PHOTOSHOP_INDEX_VERSION}"
+        return self.signature
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -264,13 +275,13 @@ class Library:
                     old = db.execute("SELECT * FROM files WHERE path=?", (path_key,)).fetchone()
                     stat = None
                     digest = None
-                    generated: list[tuple[int, int, int, str, str, str]] = []
+                    generated: list[tuple[int, int, int, str, str, str, str]] = []
                     staging = self.cache_dir / uuid.uuid4().hex
                     try:
                         stat = path.stat()
                         if old and old["status"] == "ready" and old["size"] == stat.st_size \
                                 and old["mtime_ns"] == stat.st_mtime_ns \
-                                and old["signature"] == self.signature:
+                                and old["signature"] == self._file_signature(path):
                             existing_thumbnails = [row[0] for row in db.execute(
                                 "SELECT thumbnail_path FROM pages WHERE file_id=?", (old["id"],)
                             )]
@@ -294,7 +305,7 @@ class Library:
                             thumbnail.thumbnail((240, 180))
                             thumbnail.save(thumbnail_path, "JPEG", quality=88)
                             generated.append((rendered.page, width, height, descriptor,
-                                              pixel_hash, str(thumbnail_path)))
+                                              pixel_hash, str(thumbnail_path), rendered.label))
                         if not generated:
                             raise RenderError("文件中没有可读取的预览")
                         after = path.stat()
@@ -361,7 +372,7 @@ class Library:
     def _replace_file(
         self, db: sqlite3.Connection, path: str, size: int, mtime_ns: int,
         digest: str | None, status: str, error: str | None,
-        pages: Sequence[tuple[int, int, int, str, str, str]], roots: Sequence[str],
+        pages: Sequence[tuple[int, int, int, str, str, str, str]], roots: Sequence[str],
     ) -> list[str]:
         with db:
             db.execute("""
@@ -370,15 +381,15 @@ class Library:
                 ON CONFLICT(path) DO UPDATE SET size=excluded.size,
                     mtime_ns=excluded.mtime_ns, sha256=excluded.sha256,
                     signature=excluded.signature, status=excluded.status, error=excluded.error
-            """, (path, size, mtime_ns, digest, self.signature, status, error))
+            """, (path, size, mtime_ns, digest, self._file_signature(Path(path)), status, error))
             file_id = db.execute("SELECT id FROM files WHERE path=?", (path,)).fetchone()[0]
             old_thumbnails = [row[0] for row in db.execute(
                 "SELECT thumbnail_path FROM pages WHERE file_id=?", (file_id,)
             )]
             db.execute("DELETE FROM pages WHERE file_id=?", (file_id,))
             db.executemany(
-                "INSERT INTO pages(file_id,page,width,height,descriptor,pixel_digest,thumbnail_path) "
-                "VALUES(?,?,?,?,?,?,?)", [(file_id, *page) for page in pages],
+                "INSERT INTO pages(file_id,page,width,height,descriptor,pixel_digest,thumbnail_path,label) "
+                "VALUES(?,?,?,?,?,?,?,?)", [(file_id, *page) for page in pages],
             )
             self._associate(db, file_id, path, roots)
         return old_thumbnails
@@ -413,17 +424,23 @@ class Library:
         with self._connection() as db:
             rows = db.execute("""
                 SELECT f.*, p.page, p.width, p.height, p.descriptor,
-                       p.pixel_digest, p.thumbnail_path
+                       p.pixel_digest, p.thumbnail_path, p.label
                 FROM files f LEFT JOIN pages p ON p.file_id=f.id
                 ORDER BY f.id, p.page
             """)
+            checked_file_id = None
+            file_is_current = False
             for row in rows:
                 _check_cancel(cancel)
-                try:
-                    current_stat = Path(row["path"]).stat()
-                except OSError:
-                    continue
-                if current_stat.st_size != row["size"] or current_stat.st_mtime_ns != row["mtime_ns"]:
+                if row["id"] != checked_file_id:
+                    checked_file_id = row["id"]
+                    try:
+                        current_stat = Path(row["path"]).stat()
+                        file_is_current = (current_stat.st_size == row["size"]
+                                           and current_stat.st_mtime_ns == row["mtime_ns"])
+                    except OSError:
+                        file_is_current = False
+                if not file_is_current:
                     # Do not report an obsolete index fingerprint as a current match.
                     continue
                 if row["sha256"] == digest:
@@ -443,6 +460,7 @@ class Library:
                     thumbnail_path=row["thumbnail_path"] or "",
                     width=row["width"] or 0, height=row["height"] or 0,
                     file_size=row["size"], modified_ns=row["mtime_ns"],
+                    page_label=row["label"] or "",
                 )
                 old = results.get(found.file_id)
                 priority = {"identical": 2, "preview": 1, "similar": 0}

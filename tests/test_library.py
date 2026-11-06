@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import shutil
+import sqlite3
 import threading
 
 import pytest
@@ -336,3 +337,87 @@ def test_scan_skips_windows_junction_directories(library, picture, tmp_path, mon
     report = library.scan([root])
     assert report.indexed == 1 and report.failed == 0
     assert library.stats().files == 1
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_query_matches_individual_artboard_and_retains_label_after_reopen(tmp_path, artboard_factory, version):
+    source, exports = artboard_factory(version=version)
+    root = tmp_path / "sources"
+    root.mkdir()
+    source = source.rename(root / source.name)
+    query = tmp_path / "board-export.png"
+    exports[1].save(query)
+    library = Library(tmp_path / "index.sqlite3", tmp_path / "thumbs")
+    report = library.scan([root])
+    assert report.failed == 0 and report.indexed == 1
+    assert library.stats().pages == 4
+    results = library.search(query, min_score=95)
+    assert len(results) == 1  # Best board per source file, not one result per board.
+    assert Path(results[0].path) == source
+    assert results[0].page_label == "画板 2：设计画板 2"
+    assert results[0].width == exports[1].width
+    assert results[0].height == exports[1].height
+    reopened = Library(library.database_path, library.cache_dir)
+    assert reopened.search(query, min_score=95)[0].page_label == results[0].page_label
+    assert reopened.scan([root]).unchanged == 1
+
+
+def test_old_database_migrates_and_only_photoshop_files_need_reindex(tmp_path, artboard_factory, monkeypatch):
+    from image_tools import library as library_module
+
+    source, exports = artboard_factory()
+    root = tmp_path / "sources"
+    root.mkdir()
+    source = source.rename(root / source.name)
+    photo = root / "photo.png"
+    exports[0].save(photo)
+    database, cache = tmp_path / "index.sqlite3", tmp_path / "thumbs"
+    library = Library(database, cache)
+    library.scan([root])
+    source_bytes = source.read_bytes()
+    source_key = os.path.normcase(str(source.resolve()))
+    with sqlite3.connect(database) as db:
+        # Reproduce v0.1.0's schema and single-preview Photoshop record.
+        db.execute("DELETE FROM pages WHERE file_id=(SELECT id FROM files WHERE path=?) AND page>1", (source_key,))
+        db.execute("UPDATE files SET signature=? WHERE path=?", (library.signature, source_key))
+        db.execute("ALTER TABLE pages DROP COLUMN label")
+    reopened = Library(database, cache)
+    assert reopened.stats().files == 2
+    assert [Path(path) for path in reopened.roots()] == [root]
+    assert reopened.search(photo)[0].match_type == "identical"
+    renderer = library_module.render_pages
+    rendered_paths = []
+
+    def track_render(path, max_pages=20):
+        rendered_paths.append(path)
+        yield from renderer(path, max_pages=max_pages)
+
+    monkeypatch.setattr(library_module, "render_pages", track_render)
+    report = reopened.scan([root])
+    assert (report.indexed, report.unchanged, report.failed) == (1, 1, 0)
+    assert rendered_paths == [source]
+    assert reopened.stats().pages == 5
+    assert reopened.scan([root]).unchanged == 2
+    assert source.read_bytes() == source_bytes
+
+
+def test_multi_artboard_search_checks_source_path_only_once(tmp_path, artboard_factory, monkeypatch):
+    source, exports = artboard_factory()
+    root = tmp_path / "sources"
+    root.mkdir()
+    source = source.rename(root / source.name)
+    query = tmp_path / "query.png"
+    exports[1].save(query)
+    library = Library(tmp_path / "index.sqlite3", tmp_path / "thumbs")
+    library.scan([root])
+    original_stat = Path.stat
+    calls = []
+
+    def track_stat(path, *args, **kwargs):
+        if path == source:
+            calls.append(path)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", track_stat)
+    assert library.search(query, min_score=95)[0].page_label == "画板 2：设计画板 2"
+    assert calls == [source]  # Important for network shares with many boards/pages.

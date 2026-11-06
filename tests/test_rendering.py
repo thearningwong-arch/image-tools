@@ -179,3 +179,60 @@ def test_photoshop_without_embedded_preview_composites_layers(tmp_path):
     assert not PSDImage.open(path).has_preview()
     preview = list(render_pages(path))[0].image
     assert similarity(describe(original), describe(preview)) >= 99
+
+
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("preview", [True, False])
+def test_each_photoshop_artboard_is_searchable_at_its_own_size(artboard_factory, version, preview):
+    path, exports = artboard_factory(version=version, preview=preview)
+    rendered = list(render_pages(path))
+    boards = [page for page in rendered if page.label.startswith("画板")]
+    assert len(boards) == 3
+    assert [page.label for page in boards] == [f"画板 {n}：设计画板 {n}" for n in (1, 2, 3)]
+    for page, exported in zip(boards, exports):
+        assert page.image.size == exported.size
+        assert page.image.getpixel((0, 0)) == (255, 255, 255)
+        assert similarity(describe(page.image), describe(exported)) >= 99
+    assert bool(rendered[0].label == "整图预览") == preview
+
+
+@pytest.mark.parametrize("outside", [True, "negative"])
+def test_artboards_outside_canvas_use_their_own_composite(artboard_factory, outside):
+    path, exports = artboard_factory(outside=outside)
+    boards = [page for page in render_pages(path) if page.label.startswith("画板")]
+    assert len(boards) == 3
+    for page, exported in zip(boards, exports):
+        assert page.image.size == exported.size
+        assert similarity(describe(page.image), describe(exported)) >= 99
+
+
+def test_artboards_use_native_merged_pixels_before_resizing(artboard_factory, monkeypatch):
+    from psd_tools.api.layers import Artboard
+
+    path, exports = artboard_factory(count=12)  # Overview wider than 1600px.
+
+    def unsupported_effect(*args, **kwargs):
+        pytest.fail("In-canvas boards should use their Photoshop merged preview")
+
+    monkeypatch.setattr(Artboard, "composite", unsupported_effect)
+    rendered = list(render_pages(path))
+    assert max(rendered[0].image.size) == 1600
+    board = rendered[-1]
+    assert board.image.size == exports[-1].size
+    assert similarity(describe(board.image), describe(exports[-1])) >= 99
+
+
+def test_artboards_are_not_limited_to_twenty_pages_and_respect_visibility(artboard_factory):
+    path, _ = artboard_factory(count=23, hidden_last=True)
+    boards = [page for page in render_pages(path, max_pages=1) if page.label.startswith("画板")]
+    assert len(boards) == 22
+    assert boards[-1].label == "画板 22：设计画板 22"
+
+
+def test_overlapping_artboards_are_not_contaminated_by_other_boards(artboard_factory):
+    path, exports = artboard_factory(overlap=True)
+    boards = [page for page in render_pages(path) if page.label.startswith("画板")]
+    assert len(boards) == 3
+    for page, exported in zip(boards, exports):
+        assert sum(abs(a - b) for a, b in zip(page.image.getpixel((20, 30)), exported.getpixel((20, 30)))) <= 3
+        assert similarity(describe(page.image), describe(exported)) >= 99

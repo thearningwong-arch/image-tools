@@ -271,7 +271,7 @@ class MainWindow(QMainWindow):
         sidebar_outer.addWidget(controls_panel)
         page_limit = getattr(self.library, "max_pages", 20)
         sidebar_layout.addWidget(_label(
-            f"每份文档最多检索前 {page_limit} 页，可用 --max-pages 调整。源文件通过预览匹配，外观接近不代表已确认原始来源。",
+            f"PDF/AI/TIFF 默认检索前 {page_limit} 页，可用 --max-pages 调整。PSD/PSB 会检索所有可见画板。外观接近不代表已确认原始来源。",
             "subtle", True,
         ))
         sidebar_layout.addStretch()
@@ -408,7 +408,9 @@ class MainWindow(QMainWindow):
         self.query_name.setText(path.name)
         self.query_name.setToolTip(str(self._query))
         self.query_preview.clear()
-        if path.suffix.lower() in {".psd", ".psb", ".ai", ".eps", ".pdf"}:
+        if path.suffix.lower() in {".psd", ".psb"}:
+            self.query_preview.setText(f"{path.suffix[1:].upper()} 源文件\n查询使用整图；无整图时取首个可见画板")
+        elif path.suffix.lower() in {".ai", ".eps", ".pdf"}:
             self.query_preview.setText(f"{path.suffix[1:].upper()} 源文件\n检索时读取第 1 页预览")
         else:
             pixmap = _scaled_pixmap(path, QSize(230, 94))
@@ -547,7 +549,7 @@ class MainWindow(QMainWindow):
                 f"{len(self._results):,} 个文件内容相同 · 无法读取预览，仅完成文件内容比对，未进行相似图片检索"
             )
         else:
-            self.results_summary.setText(f"{len(self._results):,} 个候选文件 · {exact:,} 个文件完全相同 · 每个文件显示最匹配的页面")
+            self.results_summary.setText(f"{len(self._results):,} 个候选文件 · {exact:,} 个文件完全相同 · 每个文件显示最匹配的页面或画板")
         for result in self._results:
             self.results_stack.addWidget(self._result_card(result))
         self.results_stack.addStretch()
@@ -577,11 +579,11 @@ class MainWindow(QMainWindow):
         title_row.addWidget(_label(suffix, "tag"))
         body.addLayout(title_row)
         metadata = (
-            f"{result.width:,} × {result.height:,}  ·  {_human_size(result.file_size)}  ·  第 {result.page} 页"
+            f"{result.width:,} × {result.height:,}  ·  {_human_size(result.file_size)}  ·  {result.page_label or f'第 {result.page} 页'}"
             if result.thumbnail_path
             else f"无可用预览  ·  {_human_size(result.file_size)}"
         )
-        body.addWidget(_label(metadata, "subtle"))
+        body.addWidget(_label(metadata, "subtle", True))
         path_field = QLineEdit(result.path)
         path_field.setReadOnly(True)
         path_field.setToolTip(result.path)
@@ -666,12 +668,12 @@ class MainWindow(QMainWindow):
         try:
             with open(filename, "w", encoding="utf-8-sig", newline="") as stream:
                 writer = csv.writer(stream)
-                writer.writerow(["文件名", "完整路径", "匹配类型", "外观分数（非概率）", "页码", "文件字节数"])
+                writer.writerow(["文件名", "完整路径", "匹配类型", "外观分数（非概率）", "页码", "文件字节数", "匹配页面/画板"])
                 for result in self._results:
                     writer.writerow([
                         safe_cell(Path(result.path).name), safe_cell(result.path),
                         MATCH_LABELS.get(result.match_type, result.match_type), f"{result.score:.1f}",
-                        result.page, result.file_size,
+                        result.page, result.file_size, safe_cell(result.page_label or f"第 {result.page} 页"),
                     ])
         except OSError as exc:
             self._show_error("导出失败", str(exc))

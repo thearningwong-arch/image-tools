@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QLabel, QLineEdit, QPushButton
 
 from image_tools.library import Library
 from image_tools import ui
@@ -118,6 +118,32 @@ def test_desktop_scan_search_actions_export_and_reopen(window, tmp_path, monkeyp
     assert reopened.roots() == [str(root.resolve())]
     assert len(reopened.search(query)) == 3
     assert reopened.scan([root]).unchanged == 3
+
+
+def test_artboard_match_is_named_in_results_and_export(window, tmp_path, monkeypatch, artboard_factory):
+    source, exports = artboard_factory()
+    root = tmp_path / "sources"
+    root.mkdir()
+    source.rename(root / source.name)
+    query = tmp_path / "exported-board.png"
+    exports[1].save(query)
+    window._add_folder(root)
+    click(window.scan_button)
+    wait_until(lambda: window._worker is None)
+    window._set_query(query)
+    click(window.search_button)
+    wait_until(lambda: window._worker is None)
+    assert not window.errors
+    assert len(window._results) == 1
+    label = "画板 2：设计画板 2"
+    assert window._results[0].page_label == label
+    assert any(label in widget.text() for widget in window.results_content.findChildren(QLabel))
+    csv_path = tmp_path / "boards.csv"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(csv_path), ""))
+    click(window.export_button)
+    with csv_path.open(encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert rows[0]["匹配页面/画板"] == label
 
 
 def test_new_query_clears_previous_results_and_failed_search_cannot_export_them(window, tmp_path, monkeypatch):
