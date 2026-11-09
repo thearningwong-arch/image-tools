@@ -40,7 +40,7 @@ class SearchResult:
     file_id: int
     path: str
     score: float
-    match_type: str  # identical (bytes), preview (rendered pixels), similar
+    match_type: str  # identical (bytes), preview (rendered pixels), similar, partial
     page: int
     thumbnail_path: str
     width: int
@@ -48,3 +48,5 @@ class SearchResult:
     file_size: int
     modified_ns: int
     page_label: str = ""
+    # Normalized left/top/right/bottom within this page/artboard preview.
+    match_region: tuple[float, float, float, float] | None = None

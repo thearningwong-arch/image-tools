@@ -16,7 +16,9 @@ import sqlite3
 import threading
 import uuid
 
-from . import features
+from PIL import Image
+
+from . import features, partial
 from .models import LibraryStats, ScanProgress, ScanReport, SearchResult
 from .rendering import RenderError, SUPPORTED_EXTENSIONS, render_pages
 
@@ -118,6 +120,14 @@ class Library:
                     thumbnail_path TEXT NOT NULL,
                     label TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(file_id, page)
+                );
+                CREATE TABLE IF NOT EXISTS partial_pages (
+                    file_id INTEGER NOT NULL,
+                    page INTEGER NOT NULL,
+                    version INTEGER NOT NULL,
+                    data BLOB NOT NULL,
+                    PRIMARY KEY(file_id, page),
+                    FOREIGN KEY(file_id, page) REFERENCES pages(file_id, page) ON DELETE CASCADE
                 );
             """)
             # Additive migration: retain the user's existing files and roots.
@@ -276,6 +286,7 @@ class Library:
                     stat = None
                     digest = None
                     generated: list[tuple[int, int, int, str, str, str, str]] = []
+                    partial_data: dict[int, bytes] = {}
                     staging = self.cache_dir / uuid.uuid4().hex
                     try:
                         stat = path.stat()
@@ -300,6 +311,8 @@ class Library:
                             width, height = image.size
                             descriptor = json.dumps(features.describe(image), separators=(",", ":"))
                             pixel_hash = features.pixel_digest(image)
+                            partial_data[rendered.page] = partial.pack(partial.prepare(image))
+                            _check_cancel(cancel)
                             thumbnail_path = staging / f"{rendered.page}.jpg"
                             thumbnail = image.convert("RGB")
                             thumbnail.thumbnail((240, 180))
@@ -313,7 +326,7 @@ class Library:
                             raise RenderError("文件在扫描期间发生变化，请重新扫描")
                         old_thumbnails = self._replace_file(
                             db, path_key, stat.st_size, stat.st_mtime_ns, digest,
-                            "ready", None, generated, known_roots,
+                            "ready", None, generated, known_roots, partial_data,
                         )
                         self._delete_thumbnails(old_thumbnails)
                         report.indexed += 1
@@ -373,6 +386,7 @@ class Library:
         self, db: sqlite3.Connection, path: str, size: int, mtime_ns: int,
         digest: str | None, status: str, error: str | None,
         pages: Sequence[tuple[int, int, int, str, str, str, str]], roots: Sequence[str],
+        partial_data: dict[int, bytes] | None = None,
     ) -> list[str]:
         with db:
             db.execute("""
@@ -386,10 +400,17 @@ class Library:
             old_thumbnails = [row[0] for row in db.execute(
                 "SELECT thumbnail_path FROM pages WHERE file_id=?", (file_id,)
             )]
+            # Explicitly invalidate all cached pages, including leftovers written
+            # by older clients/connections that did not enable foreign keys.
+            db.execute("DELETE FROM partial_pages WHERE file_id=?", (file_id,))
             db.execute("DELETE FROM pages WHERE file_id=?", (file_id,))
             db.executemany(
                 "INSERT INTO pages(file_id,page,width,height,descriptor,pixel_digest,thumbnail_path,label) "
                 "VALUES(?,?,?,?,?,?,?,?)", [(file_id, *page) for page in pages],
+            )
+            db.executemany(
+                "INSERT INTO partial_pages(file_id,page,version,data) VALUES(?,?,?,?)",
+                [(file_id, page, partial.VERSION, data) for page, data in (partial_data or {}).items()],
             )
             self._associate(db, file_id, path, roots)
         return old_thumbnails
@@ -397,11 +418,16 @@ class Library:
     def search(
         self, query_path: Path, limit: int = 100, min_score: float = 70,
         cancel: threading.Event | None = None,
+        *, mode: str = "whole", progress: Callable[[ScanProgress], None] | None = None,
     ) -> list[SearchResult]:
+        if mode not in {"whole", "partial"}:
+            raise ValueError("未知检索方式")
         if limit < 1:
             return []
         if not 0 <= min_score <= 100:
             raise ValueError("相似度阈值必须在 0 到 100 之间")
+        if mode == "partial":
+            return self._search_partial(query_path, limit, min_score, cancel, progress)
         query = _path(query_path)
         _check_cancel(cancel)
         query_stat = query.stat()
@@ -473,6 +499,154 @@ class Library:
             raise RenderError(f"无法读取查询图片，也未找到内容完全相同的文件：{render_error}")
         priority = {"identical": 0, "preview": 1, "similar": 2}
         return sorted(results.values(), key=lambda r: (-r.score, priority[r.match_type], r.path))[:limit]
+
+    def _fill_partial_cache(
+        self, db: sqlite3.Connection, file: sqlite3.Row, before: os.stat_result,
+        cancel: threading.Event | None, *, refresh: bool = False,
+    ) -> None:
+        """Add features to legacy indexes without replacing their pages or hashes."""
+        pages = {row['page']: row for row in db.execute(
+            "SELECT p.* FROM pages p LEFT JOIN partial_pages c ON c.file_id=p.file_id AND c.page=p.page "
+            "WHERE p.file_id=? AND (? OR c.version IS NULL OR c.version!=?)",
+            (file['id'], refresh, partial.VERSION),
+        )}
+        if not pages:
+            return
+        renderer = render_pages(Path(file['path']), max_pages=max(pages))
+        try:
+            with db:
+                remaining = set(pages)
+                for rendered in renderer:
+                    _check_cancel(cancel)
+                    page = pages.get(rendered.page)
+                    if page is None:
+                        continue
+                    if (rendered.image.size != (page['width'], page['height'])
+                            or rendered.label != page['label']):
+                        raise RenderError('源文件预览与旧索引不一致，请建立 / 更新索引')
+                    data = partial.pack(partial.prepare(rendered.image))
+                    _check_cancel(cancel)
+                    db.execute(
+                        "INSERT INTO partial_pages(file_id,page,version,data) VALUES(?,?,?,?) "
+                        "ON CONFLICT(file_id,page) DO UPDATE SET version=excluded.version,data=excluded.data",
+                        (file['id'], rendered.page, partial.VERSION, data),
+                    )
+                    remaining.discard(rendered.page)
+                    if not remaining:
+                        break
+                if remaining:
+                    raise RenderError('源文件缺少旧索引中的页面/画板，请建立 / 更新索引')
+                if not _same_snapshot(before, Path(file['path']).stat()):
+                    raise RenderError('文件在补齐局部索引期间发生变化，请重新扫描')
+        finally:
+            renderer.close()
+
+    def _search_partial(
+        self, query_path: Path, limit: int, min_score: float,
+        cancel: threading.Event | None, progress: Callable[[ScanProgress], None] | None,
+    ) -> list[SearchResult]:
+        query = _path(query_path)
+        _check_cancel(cancel)
+        query_stat = query.stat()
+        renderer = render_pages(query, max_pages=1)
+        try:
+            try:
+                reference = partial.prepare(next(renderer).image)
+            except (RenderError, StopIteration, OSError, ValueError) as error:
+                raise RenderError(f'无法读取局部截图：{error}') from error
+        finally:
+            renderer.close()
+        _check_cancel(cancel)
+        _check_query_snapshot(query, query_stat)
+        if not partial.searchable(reference):
+            raise RenderError('截图太小或缺少可辨细节，请选择至少 16 × 16 像素且含图案/纹理的截图')
+        results: list[SearchResult] = []
+        issues: list[str] = []
+        with self._connection() as db:
+            files = db.execute("SELECT * FROM files WHERE status='ready' ORDER BY id").fetchall()
+            for position, file in enumerate(files, 1):
+                _check_cancel(cancel)
+                _check_query_snapshot(query, query_stat)
+                path = Path(file['path'])
+                if progress:
+                    progress(ScanProgress(position - 1, len(files), str(path), '正在比较 / 补齐局部索引'))
+                try:
+                    before = path.stat()
+                except OSError:
+                    continue
+                if before.st_size != file['size'] or before.st_mtime_ns != file['mtime_ns']:
+                    continue
+                best: SearchResult | None = None
+                try:
+                    self._fill_partial_cache(db, file, before, cancel)
+                    # Keep at most one decoded page in memory, even for many artboards.
+                    pages = db.execute("SELECT * FROM pages WHERE file_id=? ORDER BY page", (file['id'],)).fetchall()
+                    refreshed = False
+                    for page in pages:
+                        _check_cancel(cancel)
+                        data = db.execute("SELECT data FROM partial_pages WHERE file_id=? AND page=?",
+                                          (file['id'], page['page'])).fetchone()
+                        try:
+                            target = partial.unpack(data[0])
+                        except (ValueError, OSError, KeyError, TypeError):
+                            if refreshed:
+                                raise RenderError('无法读取局部索引缓存，请更新索引')
+                            self._fill_partial_cache(db, file, before, cancel, refresh=True)
+                            refreshed = True
+                            data = db.execute("SELECT data FROM partial_pages WHERE file_id=? AND page=?",
+                                              (file['id'], page['page'])).fetchone()
+                            target = partial.unpack(data[0])
+                        match = partial.locate(reference, target, lambda: _check_cancel(cancel))
+                        if match is None or match.score < min_score:
+                            continue
+                        found = SearchResult(
+                            file_id=file['id'], path=file['path'], score=round(match.score, 1),
+                            match_type='partial', page=page['page'], thumbnail_path=page['thumbnail_path'],
+                            width=page['width'], height=page['height'], file_size=file['size'],
+                            modified_ns=file['mtime_ns'], page_label=page['label'], match_region=match.region,
+                        )
+                        # Prefer a named artboard over its overview when equally good.
+                        board = found.page_label.startswith('画板 ')
+                        old_board = best is not None and best.page_label.startswith('画板 ')
+                        if best is None:
+                            best = found
+                        elif board != old_board and abs(found.score - best.score) <= 3:
+                            if board:
+                                best = found
+                        elif found.score > best.score:
+                            best = found
+                    if not _same_snapshot(before, path.stat()):
+                        best = None
+                except _Cancelled:
+                    raise
+                except (RenderError, OSError, ValueError) as error:
+                    issues.append(f'{path.name}：{error}')
+                    if progress:
+                        progress(ScanProgress(position, len(files), str(path), f'已跳过：{error}'))
+                    continue
+                if best is not None:
+                    results.append(best)
+                if progress:
+                    progress(ScanProgress(position, len(files), str(path), '已比较局部预览'))
+        _check_cancel(cancel)
+        _check_query_snapshot(query, query_stat)
+        if not results and issues:
+            raise RenderError(f'没有局部匹配，{len(issues)} 个文件无法读取局部预览；{issues[0]}')
+        return sorted(results, key=lambda result: (-result.score, result.path))[:limit]
+
+    def match_preview(self, result: SearchResult) -> Image.Image:
+        """Read the exact cached page used for a result without reopening a PSD."""
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT c.data FROM partial_pages c JOIN pages p ON p.file_id=c.file_id AND p.page=c.page "
+                "JOIN files f ON f.id=p.file_id WHERE f.id=? AND p.page=? AND p.thumbnail_path=? "
+                "AND f.size=? AND f.mtime_ns=? AND c.version=?",
+                (result.file_id, result.page, result.thumbnail_path, result.file_size,
+                 result.modified_ns, partial.VERSION),
+            ).fetchone()
+        if row is None:
+            raise RenderError('此结果的索引已更新，请重新检索')
+        return Image.fromarray(partial.unpack(row[0]).rgb)
 
     def close(self) -> None:
         """Connections are scoped to operations; supplied for UI lifecycle symmetry."""

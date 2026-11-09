@@ -6,10 +6,10 @@ from pathlib import Path
 import threading
 from typing import Callable
 
-from PySide6.QtCore import Qt, QThread, Signal, QSize, QTimer
-from PySide6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QImageReader, QPixmap
+from PySide6.QtCore import Qt, QThread, Signal, QSize, QTimer, QRectF
+from PySide6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QImageReader, QPixmap, QPainter, QColor, QPen
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
     QSlider, QSplitter, QTextEdit, QVBoxLayout, QWidget, QMainWindow,
 )
@@ -22,7 +22,7 @@ from .rendering import SUPPORTED_EXTENSIONS
 
 IMAGE_SUFFIXES = SUPPORTED_EXTENSIONS
 FILE_FILTER = "图片与设计文件 (" + " ".join(f"*{suffix}" for suffix in sorted(IMAGE_SUFFIXES)) + ");;所有文件 (*)"
-MATCH_LABELS = {"identical": "文件完全相同", "preview": "预览一致", "similar": "外观相似"}
+MATCH_LABELS = {"identical": "文件完全相同", "preview": "预览一致", "similar": "外观相似", "partial": "局部截图命中"}
 
 STYLE = """
 QMainWindow, QWidget#root { background: #f3f6f7; color: #142d35; }
@@ -132,6 +132,21 @@ def _human_size(value: int) -> str:
     return str(value)
 
 
+def _highlight_region(pixmap: QPixmap, region: tuple[float, float, float, float] | None) -> QPixmap:
+    if pixmap.isNull() or region is None:
+        return pixmap
+    marked = pixmap.copy()
+    painter = QPainter(marked)
+    painter.setPen(QPen(QColor('#e52d47'), 2))
+    left, top, right, bottom = region
+    rect = QRectF(left * marked.width(), top * marked.height(),
+                  (right - left) * marked.width(), (bottom - top) * marked.height())
+    rect = rect.intersected(QRectF(1, 1, marked.width() - 2, marked.height() - 2))
+    painter.drawRect(rect)
+    painter.end()
+    return marked
+
+
 class MainWindow(QMainWindow):
     """One local catalogue, one cancellable background operation at a time."""
 
@@ -189,6 +204,7 @@ class MainWindow(QMainWindow):
         sidebar_outer.setContentsMargins(0, 0, 0, 0)
         sidebar_outer.setSpacing(10)
         sidebar_scroll = QScrollArea()
+        self.sidebar_scroll = sidebar_scroll
         sidebar_scroll.setWidgetResizable(True)
         sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         sidebar = QWidget()
@@ -230,6 +246,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(folder_panel)
 
         query_panel, query_layout = _panel()
+        self.query_panel = query_panel
         query_layout.addWidget(_label("02 / 以图找文件", "eyebrow"))
         query_header = QHBoxLayout()
         query_header.addWidget(_label("查询图片", "heading"), 1)
@@ -252,8 +269,16 @@ class MainWindow(QMainWindow):
         query_layout.addWidget(drop_frame)
         sidebar_layout.addWidget(query_panel)
         controls_panel, controls_layout = _panel()
+        controls_layout.addWidget(_label("检索方式"))
+        self.search_mode = QComboBox()
+        self.search_mode.addItem("整图相似检索", "whole")
+        self.search_mode.addItem("局部截图检索", "partial")
+        self.search_mode.currentIndexChanged.connect(self._mode_changed)
+        controls_layout.addWidget(self.search_mode)
+        self.mode_hint = _label("比较整图外观，保留文件完全相同与预览一致的匹配。", "subtle", True)
+        controls_layout.addWidget(self.mode_hint)
         similarity_row = QHBoxLayout()
-        similarity_row.addWidget(_label("最低外观相似度"))
+        similarity_row.addWidget(_label("最低匹配分数"))
         similarity_row.addStretch()
         self.threshold_label = _label("70", "eyebrow")
         similarity_row.addWidget(self.threshold_label)
@@ -301,7 +326,8 @@ class MainWindow(QMainWindow):
         self.results_stack.setSpacing(10)
         self.results_scroll.setWidget(self.results_content)
         results_layout.addWidget(self.results_scroll, 1)
-        results_layout.addWidget(_label("优先展示完全相同的文件，然后按外观相似度排序 · 每次最多 100 项", "subtle", True))
+        self.ranking_hint = _label("优先展示完全相同的文件，然后按外观相似度排序 · 每次最多 100 项", "subtle", True)
+        results_layout.addWidget(self.ranking_hint)
         splitter.addWidget(results_panel)
         splitter.setSizes([310, 860])
         layout.addWidget(splitter, 1)
@@ -347,7 +373,7 @@ class MainWindow(QMainWindow):
         self.export_button.setEnabled(bool(self._results) and not busy)
 
     def _set_busy(self, busy: bool) -> None:
-        for widget in (self.add_folder_button, self.query_button, self.folder_list, self.threshold, self.failures_button):
+        for widget in (self.add_folder_button, self.query_button, self.folder_list, self.threshold, self.failures_button, self.search_mode):
             widget.setEnabled(not busy)
         self.cancel_button.setVisible(busy)
         self.cancel_button.setEnabled(busy)
@@ -393,6 +419,23 @@ class MainWindow(QMainWindow):
         if filename:
             self._set_query(Path(filename))
 
+    def _mode_changed(self) -> None:
+        if self._worker is not None:
+            return
+        is_partial = self.search_mode.currentData() == "partial"
+        self.mode_hint.setText(
+            "用任意位置的局部截图找完整图片，支持缩放；红框标出命中位置。"
+            if is_partial else "比较整图外观，保留文件完全相同与预览一致的匹配。"
+        )
+        self.mode_hint.setToolTip("旧索引首次局部检索会自动补齐缓存，不需要删除或重建。" if is_partial else "")
+        self.ranking_hint.setText(
+            "按局部匹配分数排序 · 每个文件显示最佳页面 / 画板 · 每次最多 100 项" if is_partial else
+            "优先展示完全相同的文件，然后按外观相似度排序 · 每次最多 100 项"
+        )
+        self._results = []
+        self._empty_results("检索方式已切换", "选择截图并点击“开始检索”。" if is_partial else "点击“开始检索”，比较整张图片。")
+        self._update_buttons()
+
     def _set_query(self, path: Path) -> None:
         if self._worker is not None:
             return
@@ -420,6 +463,10 @@ class MainWindow(QMainWindow):
                 self.query_preview.setPixmap(pixmap)
         self._status(f"已选择 {path.name}，点击“开始检索”。")
         self._update_buttons()
+        if self.isVisible():
+            # Keep the selected screenshot visible even with a long folder list
+            # or the extra partial-search controls on a small desktop.
+            self.sidebar_scroll.ensureWidgetVisible(self.query_panel, 0, 8)
 
     def _scan(self) -> None:
         if self._worker is not None or not self._folders:
@@ -432,12 +479,14 @@ class MainWindow(QMainWindow):
     def _search(self) -> None:
         if self._query is None or self._worker is not None:
             return
-        query, minimum = self._query, self.threshold.value()
+        query, minimum, mode = self._query, self.threshold.value(), self.search_mode.currentData()
         self._results = []
         self._empty_results("正在检索本地素材库", "正在比较图片预览，请等待结果。")
         self.progress_bar.setRange(0, 0)
-        self._status("正在比较图片与本地索引…")
-        self._start_job("search", lambda cancel, progress: self.library.search(query, min_score=minimum, limit=100, cancel=cancel))
+        self._status("正在定位截图，首次使用可能需要补齐局部索引…" if mode == "partial" else "正在比较图片与本地索引…")
+        self._start_job("search", lambda cancel, progress: self.library.search(
+            query, min_score=minimum, limit=100, cancel=cancel, mode=mode, progress=progress,
+        ))
 
     def _start_job(self, kind: str, operation: Callable) -> None:
         if self._worker is not None:
@@ -540,11 +589,17 @@ class MainWindow(QMainWindow):
     def _show_results(self) -> None:
         self._clear_result_widgets()
         if not self._results:
-            self._empty_results("暂无符合条件的文件", "可降低相似度门槛，或添加更多素材文件夹并更新索引。")
+            self._empty_results("暂无符合条件的文件", (
+                "请选择包含更多可辨图案的截图；纯色、重复纹样或极小细节可能无法可靠定位。"
+                if self.search_mode.currentData() == "partial" else
+                "可降低相似度门槛，或添加更多素材文件夹并更新索引。"
+            ))
             self.results_summary.setText("0 个匹配 · 请查看素材库读取问题，确认源文件预览可用")
             return
         exact = sum(result.match_type == "identical" for result in self._results)
-        if all(not result.thumbnail_path for result in self._results):
+        if any(result.match_region is not None for result in self._results):
+            self.results_summary.setText(f"{len(self._results):,} 个局部截图候选 · 红框为当前页面/画板内的命中区域 · 每个文件显示最佳匹配")
+        elif all(not result.thumbnail_path for result in self._results):
             self.results_summary.setText(
                 f"{len(self._results):,} 个文件内容相同 · 无法读取预览，仅完成文件内容比对，未进行相似图片检索"
             )
@@ -566,7 +621,9 @@ class MainWindow(QMainWindow):
         thumbnail.setFixedSize(100, 100)
         pixmap = _scaled_pixmap(Path(result.thumbnail_path), QSize(96, 96)) if result.thumbnail_path else QPixmap()
         if not pixmap.isNull():
-            thumbnail.setPixmap(pixmap)
+            thumbnail.setPixmap(_highlight_region(pixmap, result.match_region))
+        if result.match_region is not None:
+            thumbnail.setToolTip("红框为截图在当前页面/画板中的位置，点击“查看命中区域”放大查看。")
         row.addWidget(thumbnail, 0, Qt.AlignmentFlag.AlignTop)
         body = QVBoxLayout()
         body.setSpacing(7)
@@ -584,12 +641,18 @@ class MainWindow(QMainWindow):
             else f"无可用预览  ·  {_human_size(result.file_size)}"
         )
         body.addWidget(_label(metadata, "subtle", True))
+        if result.match_region is not None:
+            body.addWidget(_label("红框：截图在此页面 / 画板内的命中位置", "subtle", True))
         path_field = QLineEdit(result.path)
         path_field.setReadOnly(True)
         path_field.setToolTip(result.path)
         path_field.setCursorPosition(0)
         body.addWidget(path_field)
         actions = QHBoxLayout()
+        if result.match_region is not None:
+            region_button = QPushButton("查看命中区域")
+            region_button.clicked.connect(lambda checked=False, item=result: self._show_match_region(item))
+            actions.addWidget(region_button)
         reveal = QPushButton("资源管理器中定位")
         reveal.clicked.connect(lambda checked=False, path=result.path: self._reveal(path))
         actions.addWidget(reveal)
@@ -631,6 +694,33 @@ class MainWindow(QMainWindow):
         QApplication.clipboard().setText(filename)
         self._status("文件路径已复制。")
 
+    def _show_match_region(self, result: SearchResult) -> None:
+        from PIL.ImageQt import ImageQt
+
+        try:
+            image = self.library.match_preview(result)
+        except Exception as exc:
+            self._show_error("无法打开命中预览", str(exc))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("局部截图命中区域")
+        dialog.resize(980, 760)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(_label(f"{Path(result.path).name} · {result.page_label or f'第 {result.page} 页'}", "heading", True))
+        layout.addWidget(_label("红框表示截图在当前页面 / 画板中的位置。坐标以此预览为参照。", "subtle", True))
+        preview = _label("", "matchPreview")
+        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pixmap = QPixmap.fromImage(ImageQt(image)).scaled(
+            QSize(920, 600), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+        )
+        preview.setPixmap(_highlight_region(pixmap, result.match_region))
+        layout.addWidget(preview, 1)
+        close = QPushButton("关闭")
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
+        dialog.deleteLater()
+
     def _show_failures(self) -> None:
         issues = list(dict.fromkeys([*self.library.failures(), *self._last_scan_errors]))
         dialog = QDialog(self)
@@ -668,12 +758,14 @@ class MainWindow(QMainWindow):
         try:
             with open(filename, "w", encoding="utf-8-sig", newline="") as stream:
                 writer = csv.writer(stream)
-                writer.writerow(["文件名", "完整路径", "匹配类型", "外观分数（非概率）", "页码", "文件字节数", "匹配页面/画板"])
+                writer.writerow(["文件名", "完整路径", "匹配类型", "外观分数（非概率）", "页码", "文件字节数", "匹配页面/画板",
+                                 "命中左边界（0-1）", "命中上边界（0-1）", "命中右边界（0-1）", "命中下边界（0-1）"])
                 for result in self._results:
                     writer.writerow([
                         safe_cell(Path(result.path).name), safe_cell(result.path),
                         MATCH_LABELS.get(result.match_type, result.match_type), f"{result.score:.1f}",
                         result.page, result.file_size, safe_cell(result.page_label or f"第 {result.page} 页"),
+                        *([f"{value:.6f}" for value in result.match_region] if result.match_region else [""] * 4),
                     ])
         except OSError as exc:
             self._show_error("导出失败", str(exc))

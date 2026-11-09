@@ -6,6 +6,26 @@ from psd_tools.api.layers import Artboard, Group, PixelLayer
 from psd_tools.constants import Compression, Resource, Tag
 from psd_tools.psd.descriptor import Descriptor, Double, Integer
 from psd_tools.psd.image_resources import ImageResource, VersionInfo
+import numpy as np
+
+
+@pytest.fixture
+def detailed_picture():
+    """A deterministic, non-periodic poster with fine details across its canvas."""
+    rng = np.random.default_rng(304)
+    pixels = rng.integers(205, 241, (600, 800, 3), dtype=np.uint8)
+    image = Image.fromarray(pixels)
+    draw = ImageDraw.Draw(image)
+    for number in range(100):
+        x, y = rng.integers((0, 0), (735, 550))
+        color = tuple(int(value) for value in rng.integers(20, 190, 3))
+        width, height = rng.integers(12, 65, 2)
+        if number % 2:
+            draw.ellipse((x, y, x + width, y + height), fill=color)
+        else:
+            draw.rectangle((x, y, x + width, y + height), fill=color)
+        draw.text((x, y + height), f'Photo {number:03}', fill='#19273c')
+    return image
 
 
 @pytest.fixture

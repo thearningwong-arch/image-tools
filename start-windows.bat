@@ -16,13 +16,13 @@ if errorlevel 1 goto failed
 if errorlevel 1 goto failed
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 goto failed
-".venv\Scripts\python.exe" -c "from PySide6.QtWidgets import QApplication; import PIL, numpy, psd_tools, pypdfium2, scipy, aggdraw"
+".venv\Scripts\python.exe" -c "from PySide6.QtWidgets import QApplication; import PIL, numpy, psd_tools, pypdfium2, scipy, aggdraw, cv2; assert hasattr(cv2, 'SIFT_create')"
 if errorlevel 1 goto failed
 goto run
 :check
 ".venv\Scripts\python.exe" -c "import sys; sys.exit(0 if (3,12) <= sys.version_info[:2] < (3,16) else 'Python 3.12 - 3.15 is required.')"
 if errorlevel 1 goto failed
-".venv\Scripts\python.exe" -c "from PySide6.QtWidgets import QApplication; import PIL, numpy, psd_tools, pypdfium2, scipy, aggdraw" >nul 2>nul
+".venv\Scripts\python.exe" -c "from PySide6.QtWidgets import QApplication; import PIL, numpy, psd_tools, pypdfium2, scipy, aggdraw, cv2; assert hasattr(cv2, 'SIFT_create')" >nul 2>nul
 if errorlevel 1 goto install
 :run
 ".venv\Scripts\python.exe" -m image_tools %*

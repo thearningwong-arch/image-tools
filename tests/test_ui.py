@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFileDialog, QFrame, QLabel, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QFrame, QLabel, QLineEdit, QPushButton
 
 from image_tools.library import Library
 from image_tools import ui
@@ -24,7 +24,10 @@ from image_tools.rendering import SUPPORTED_EXTENSIONS
 def wait_until(condition, timeout=15):
     deadline = time.monotonic() + timeout
     while not condition() and time.monotonic() < deadline:
-        QTest.qWait(10)
+        QTest.qWait(5)
+        # Some PySide builds retain the GIL inside qWait. Let the Python worker
+        # run as it can under QApplication.exec(), without increasing timeout.
+        time.sleep(0.005)
     assert condition(), "Qt background operation did not complete"
 
 
@@ -172,10 +175,12 @@ def test_new_query_clears_previous_results_and_failed_search_cannot_export_them(
     assert not window._results and not window.export_button.isEnabled()
 
 
-def test_cancel_search_is_not_an_error_and_mutations_are_blocked(window, tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', ['whole', 'partial'])
+def test_cancel_search_is_not_an_error_and_mutations_are_blocked(window, tmp_path, monkeypatch, mode):
     query = tmp_path / "query.png"
     artwork().save(query)
     window._set_query(query)
+    window.search_mode.setCurrentIndex(window.search_mode.findData(mode))
     started = threading.Event()
     calls = []
 
@@ -193,6 +198,7 @@ def test_cancel_search_is_not_an_error_and_mutations_are_blocked(window, tmp_pat
     assert not window.search_button.isEnabled()
     assert not window.add_folder_button.isEnabled()
     assert not window.query_button.isEnabled()
+    assert not window.search_mode.isEnabled()
     window._search()
     window._add_folder(tmp_path)
     window._set_query(tmp_path / "missing.png")
@@ -205,6 +211,7 @@ def test_cancel_search_is_not_an_error_and_mutations_are_blocked(window, tmp_pat
     assert not window.errors
     assert "已取消" in window.status_label.text()
     assert window.search_button.isEnabled()
+    assert window.search_mode.isEnabled()
 
 
 def test_close_waits_for_worker_cancellation_without_destroying_thread(window, tmp_path, monkeypatch):
@@ -264,3 +271,94 @@ def test_unrenderable_query_shows_exact_only_limitation(window, tmp_path):
     assert "仅完成文件内容比对" in window.results_summary.text()
     assert "未进行相似图片检索" in window.status_label.text()
     assert not window.errors
+
+
+def test_partial_screenshot_mode_highlight_preview_export_and_return_to_whole_search(
+    window, tmp_path, monkeypatch, detailed_picture, app,
+):
+    root = tmp_path / '图片库'
+    root.mkdir()
+    source = root / '完整图片.png'
+    detailed_picture.save(source)
+    query = tmp_path / '右下角截图.png'
+    detailed_picture.crop((453, 299, 697, 503)).resize((383, 320)).save(query)
+    window._add_folder(root)
+    click(window.scan_button)
+    wait_until(lambda: window._worker is None)
+    window._set_query(query)
+    window.search_mode.setCurrentIndex(window.search_mode.findData('partial'))
+    viewport = window.sidebar_scroll.viewport()
+    assert viewport.rect().contains(window.query_preview.mapTo(viewport, window.query_preview.rect().topLeft()))
+    assert viewport.rect().contains(window.query_preview.mapTo(viewport, window.query_preview.rect().bottomRight()))
+    click(window.search_button)
+    wait_until(lambda: window._worker is None)
+    assert not window.errors
+    assert len(window._results) == 1
+    result = window._results[0]
+    assert result.path == str(source) and result.match_region is not None
+    assert '局部截图候选' in window.results_summary.text()
+    card = window.results_content.findChildren(QFrame, 'resultCard')[0]
+    assert any(label.text() == '局部截图命中' for label in card.findChildren(QLabel))
+    thumbnail = card.findChild(QLabel, 'thumbnail')
+    marked = thumbnail.pixmap().toImage()
+    assert any(marked.pixelColor(x, y).name() == '#e52d47'
+               for x in range(marked.width()) for y in range(marked.height()))
+
+    dialogs = []
+
+    def inspect_preview(dialog):
+        preview = dialog.findChild(QLabel, 'matchPreview')
+        assert preview is not None and not preview.pixmap().isNull()
+        assert '完整图片.png' in ' '.join(label.text() for label in dialog.findChildren(QLabel))
+        dialogs.append(dialog.windowTitle())
+        return 0
+
+    monkeypatch.setattr(QDialog, 'exec', inspect_preview)
+    click(next(button for button in card.findChildren(QPushButton) if button.text() == '查看命中区域'))
+    assert dialogs == ['局部截图命中区域']
+    exported = tmp_path / '局部命中.csv'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args, **kwargs: (str(exported), ''))
+    click(window.export_button)
+    with exported.open(encoding='utf-8-sig', newline='') as stream:
+        row = next(csv.DictReader(stream))
+    assert row['匹配类型'] == '局部截图命中'
+    for column, expected in zip(('命中左边界（0-1）', '命中上边界（0-1）', '命中右边界（0-1）', '命中下边界（0-1）'), result.match_region):
+        assert abs(float(row[column]) - expected) < 1e-6
+
+    window.search_mode.setCurrentIndex(window.search_mode.findData('whole'))
+    assert not window._results and not window.export_button.isEnabled()
+    window._set_query(source)
+    click(window.search_button)
+    wait_until(lambda: window._worker is None)
+    assert window._results[0].match_type == 'identical'
+    assert window._results[0].match_region is None
+    assert window.library.stats().files == 1
+    assert not window.errors
+
+
+def test_partial_artboard_ui_exports_label_and_region(window, tmp_path, monkeypatch, artboard_factory):
+    source, exports = artboard_factory(version=2, preview=False)
+    root = tmp_path / 'sources'
+    root.mkdir()
+    source.rename(root / source.name)
+    query = tmp_path / '画板局部.png'
+    exports[1].crop((32, 17, 147, 108)).resize((230, 182)).save(query)
+    window._add_folder(root)
+    click(window.scan_button)
+    wait_until(lambda: window._worker is None)
+    window._set_query(query)
+    window.search_mode.setCurrentIndex(window.search_mode.findData('partial'))
+    click(window.search_button)
+    wait_until(lambda: window._worker is None)
+    assert not window.errors and len(window._results) == 1
+    result = window._results[0]
+    assert result.page_label == '画板 2：设计画板 2'
+    assert result.match_region is not None
+    assert any(result.page_label in label.text() for label in window.results_content.findChildren(QLabel))
+    exported = tmp_path / '画板命中.csv'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', lambda *args, **kwargs: (str(exported), ''))
+    click(window.export_button)
+    with exported.open(encoding='utf-8-sig', newline='') as stream:
+        row = next(csv.DictReader(stream))
+    assert row['匹配页面/画板'] == result.page_label
+    assert abs(float(row['命中左边界（0-1）']) - 0.2) < 0.03
