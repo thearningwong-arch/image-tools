@@ -105,6 +105,7 @@ jobs:
             '## Windows application regression' >> $env:GITHUB_STEP_SUMMARY
             foreach ($suite in $junit.testsuites.testsuite) {
               "Tests: $($suite.tests); failures: $($suite.failures); errors: $($suite.errors); skipped: $($suite.skipped)" >> $env:GITHUB_STEP_SUMMARY
+              Write-Output "::notice title=Windows application tests::Tests: $($suite.tests); failures: $($suite.failures); errors: $($suite.errors); skipped: $($suite.skipped)"
             }
             foreach ($problem in $junit.SelectNodes('//failure | //error')) {
               "### $($problem.ParentNode.name)" >> $env:GITHUB_STEP_SUMMARY
@@ -122,6 +123,7 @@ jobs:
             Get-Content $lifecycle -Raw >> $env:GITHUB_STEP_SUMMARY
             '```' >> $env:GITHUB_STEP_SUMMARY
             $outcome = Get-Content $lifecycle -Raw | ConvertFrom-Json
+            Write-Output "::notice title=Completed Windows installer checks::$($outcome.checks -join ', ')"
             if ($outcome.status -ne 'passed') {
               $details = $outcome.error.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
               Write-Output "::error title=Windows installer lifecycle::$details"

@@ -26,63 +26,154 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
     Require ($process.ExitCode -eq 0) "Command failed ($($process.ExitCode)): $File"
 }
 function Check-ChineseWizard([string]$File) {
-    Add-Type -AssemblyName UIAutomationClient
-    Add-Type -AssemblyName UIAutomationTypes
+    # Inno Setup's native TNewButton controls are not consistently exposed by
+    # UIAutomation on hosted runners. Inspect and invoke the actual Win32
+    # controls instead; the Chinese labels remain mandatory acceptance checks.
+    if ($null -eq ('ImageToolsInstallerTests.NativeWindows' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace ImageToolsInstallerTests {
+    public sealed class NativeWindow {
+        public IntPtr Handle;
+        public string Title;
+        public string ClassName;
+        public uint ProcessId;
+        public string ProcessName;
+    }
+    public static class NativeWindows {
+        private delegate bool EnumCallback(IntPtr window, IntPtr parameter);
+        [DllImport("user32.dll")] private static extern bool EnumWindows(EnumCallback callback, IntPtr parameter);
+        [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumCallback callback, IntPtr parameter);
+        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(IntPtr window, StringBuilder text, int maximum);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(IntPtr window, StringBuilder text, int maximum);
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr SendMessageTimeoutW(IntPtr window, uint message, UIntPtr wParam,
+            StringBuilder text, uint flags, uint timeout, out UIntPtr result);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr SendMessageTimeoutW(IntPtr window, uint message, UIntPtr wParam,
+            IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
+        private static NativeWindow Read(IntPtr window) {
+            var text = new StringBuilder(2048);
+            GetWindowTextW(window, text, text.Capacity);
+            if (text.Length == 0) {
+                UIntPtr result;
+                // WM_GETTEXT retrieves captions from controls in another
+                // process, including Delphi/Inno Setup's native controls.
+                SendMessageTimeoutW(window, 0x000D, (UIntPtr)(uint)text.Capacity, text, 0x0002, 300, out result);
+            }
+            var className = new StringBuilder(256);
+            GetClassNameW(window, className, className.Capacity);
+            uint processId;
+            GetWindowThreadProcessId(window, out processId);
+            string processName;
+            try { processName = Process.GetProcessById((int)processId).ProcessName; }
+            catch { processName = "exited"; }
+            return new NativeWindow { Handle = window, Title = text.ToString(),
+                ClassName = className.ToString(), ProcessId = processId, ProcessName = processName };
+        }
+        public static NativeWindow[] VisibleWindows() {
+            var windows = new List<NativeWindow>();
+            EnumWindows(delegate(IntPtr window, IntPtr parameter) {
+                if (IsWindowVisible(window)) windows.Add(Read(window));
+                return true;
+            }, IntPtr.Zero);
+            return windows.ToArray();
+        }
+        public static NativeWindow[] VisibleChildren(IntPtr parent) {
+            var windows = new List<NativeWindow>();
+            EnumChildWindows(parent, delegate(IntPtr window, IntPtr parameter) {
+                if (IsWindowVisible(window)) windows.Add(Read(window));
+                return true;
+            }, IntPtr.Zero);
+            return windows.ToArray();
+        }
+        public static bool Click(IntPtr button) {
+            UIntPtr result;
+            // BM_CLICK may synchronously open the modal exit confirmation.
+            // Bound that call so the caller can then find and answer it.
+            return SendMessageTimeoutW(button, 0x00F5, UIntPtr.Zero, IntPtr.Zero,
+                0x0002, 2000, out result) != IntPtr.Zero;
+        }
+    }
+}
+'@
+    }
+    function Get-WizardDiagnostics {
+        $details = @([ImageToolsInstallerTests.NativeWindows]::VisibleWindows() | Select-Object -First 40 | ForEach-Object {
+            [ordered]@{
+                title = $_.Title; class = $_.ClassName; process_id = $_.ProcessId; process_name = $_.ProcessName
+                controls = @([ImageToolsInstallerTests.NativeWindows]::VisibleChildren($_.Handle) |
+                    Where-Object { $_.Title -or $_.ClassName -match 'Button' } |
+                    Select-Object -First 80 | ForEach-Object { [ordered]@{ title = $_.Title; class = $_.ClassName } })
+            }
+        })
+        return (ConvertTo-Json -InputObject $details -Depth 6 -Compress)
+    }
     $started = Start-Process -FilePath $File -ArgumentList @('/SP-', '/NORESTART') -PassThru
     $wizardProcess = $null
     try {
         $deadline = [DateTime]::UtcNow.AddSeconds(45)
         $wizard = $null
         $next = $null
+        $cancel = $null
         do {
             Start-Sleep -Milliseconds 250
-            $windows = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-                [System.Windows.Automation.TreeScope]::Children,
-                [System.Windows.Automation.Condition]::TrueCondition)
-            foreach ($candidate in $windows) {
-                if ($candidate.Current.Name -notmatch '图迹') { continue }
-                $buttons = $candidate.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-                    (New-Object System.Windows.Automation.PropertyCondition(
-                        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                        [System.Windows.Automation.ControlType]::Button)))
-                foreach ($button in $buttons) {
-                    if ($button.Current.Name -match '下一步') { $wizard = $candidate; $next = $button; break }
+            foreach ($candidate in [ImageToolsInstallerTests.NativeWindows]::VisibleWindows()) {
+                if ($candidate.Title -notmatch '图迹') { continue }
+                $children = @([ImageToolsInstallerTests.NativeWindows]::VisibleChildren($candidate.Handle))
+                $nextButtons = @($children | Where-Object { $_.ClassName -match 'Button' -and $_.Title -match '下一步' })
+                $cancelButtons = @($children | Where-Object { $_.ClassName -match 'Button' -and $_.Title -match '取消' })
+                if ($nextButtons.Count -gt 0 -and $cancelButtons.Count -gt 0) {
+                    $wizard = $candidate
+                    $next = $nextButtons[0]
+                    $cancel = $cancelButtons[0]
+                    break
                 }
-                if ($null -ne $wizard) { break }
             }
         } while ($null -eq $wizard -and [DateTime]::UtcNow -lt $deadline)
-        Require ($null -ne $wizard -and $null -ne $next) 'Chinese installation wizard/下一步 button could not be verified on the native Windows desktop'
-        $wizardProcess = Get-Process -Id $wizard.Current.ProcessId
-        $evidence = [ordered]@{ title = $wizard.Current.Name; next_button = $next.Current.Name }
-        $buttons = $wizard.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-            (New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::Button)))
-        $cancel = $null
-        foreach ($button in $buttons) { if ($button.Current.Name -match '取消') { $cancel = $button; break } }
-        Require ($null -ne $cancel) 'Chinese wizard has no cancel button'
-        $cancel.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        if ($null -eq $wizard) {
+            throw ('Chinese installation wizard/下一步/取消 buttons could not be verified on the native Windows desktop. ' +
+                'Launcher process=' + $started.Id + '; visible Win32 windows=' + (Get-WizardDiagnostics))
+        }
+        $wizardProcess = Get-Process -Id $wizard.ProcessId
+        $evidence = [ordered]@{ method = 'Win32 EnumWindows/EnumChildWindows/GetWindowTextW/WM_GETTEXT/BM_CLICK';
+            title = $wizard.Title; window_class = $wizard.ClassName; process_name = $wizard.ProcessName;
+            next_button = $next.Title; cancel_button = $cancel.Title }
+        $null = [ImageToolsInstallerTests.NativeWindows]::Click($cancel.Handle)
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        $confirmationSeen = $false
         while (-not $wizardProcess.HasExited -and [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 200
-            $all = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
-                [System.Windows.Automation.TreeScope]::Descendants,
-                (New-Object System.Windows.Automation.PropertyCondition(
-                    [System.Windows.Automation.AutomationElement]::ProcessIdProperty, $wizardProcess.Id)))
-            foreach ($element in $all) {
-                if ($element.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and
-                    $element.Current.Name -match '^是') {
-                    $element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-                    break
+            foreach ($dialog in [ImageToolsInstallerTests.NativeWindows]::VisibleWindows()) {
+                if ($dialog.ProcessId -ne $wizard.ProcessId) { continue }
+                foreach ($button in [ImageToolsInstallerTests.NativeWindows]::VisibleChildren($dialog.Handle)) {
+                    if ($button.ClassName -match 'Button' -and $button.Title -match '^&?是') {
+                        $confirmationSeen = $true
+                        $evidence.exit_confirmation = $dialog.Title
+                        $evidence.confirm_button = $button.Title
+                        $null = [ImageToolsInstallerTests.NativeWindows]::Click($button.Handle)
+                        break
+                    }
                 }
             }
             $wizardProcess.Refresh()
         }
-        Require ($wizardProcess.HasExited) 'Cancelled installer did not close'
+        if (-not $wizardProcess.HasExited) {
+            throw ('Cancelled installer did not close. confirmationSeen=' + $confirmationSeen +
+                '; visible Win32 windows=' + (Get-WizardDiagnostics))
+        }
+        # On the welcome page Inno may cancel without an exit confirmation.
+        $evidence.exit_confirmation_seen = $confirmationSeen
         return $evidence
     } finally {
-        if ($null -ne $wizardProcess -and -not $wizardProcess.HasExited) { Stop-Process -Id $wizardProcess.Id -Force }
-        if (-not $started.HasExited) { Stop-Process -Id $started.Id -Force }
+        if ($null -ne $wizardProcess -and -not $wizardProcess.HasExited) { Stop-Process -Id $wizardProcess.Id -Force -ErrorAction SilentlyContinue }
+        if (-not $started.HasExited) { Stop-Process -Id $started.Id -Force -ErrorAction SilentlyContinue }
     }
 }
 function Snapshot([string]$Directory) {
@@ -189,9 +280,6 @@ $previousQtPlatform = $env:QT_QPA_PLATFORM
 $env:QT_QPA_PLATFORM = 'windows'
 $outcome = [ordered]@{ status = 'failed'; baseline = $BaselineVersion; candidate = $ExpectedVersion; checks = @(); work_root = $WorkRoot }
 try {
-    $outcome.chinese_wizard = Check-ChineseWizard $Installer
-    Require (-not (Test-Path -LiteralPath $RegistryKey)) 'Cancelling the wizard unexpectedly installed the application'
-    $outcome.checks += 'native-chinese-wizard-next-cancel'
     # Create a real persistent index and thumbnails using repository code, then
     # open them with the actual old installed executable before upgrade.
     Invoke-Checked $Python @('-m', 'image_tools', '--self-test-report', (Quote (Join-Path $WorkRoot 'seed.json')),
@@ -220,6 +308,13 @@ try {
     $beforeFinalUninstall = Snapshot $DataRoot
     Uninstall 'final-uninstall'
     Require ((Snapshot $DataRoot) -eq $beforeFinalUninstall) 'Final uninstall changed existing index/data'
+    $outcome.checks += 'final-uninstall-retains-index'
+    # Keep native-wizard verification mandatory, but run it after the independent
+    # installation/upgrade/runtime/uninstall checks so a desktop-provider failure
+    # still leaves evidence for those completed checks. A failure still fails CI.
+    $outcome.chinese_wizard = Check-ChineseWizard $Installer
+    Require (-not (Test-Path -LiteralPath $RegistryKey)) 'Cancelling the wizard unexpectedly installed the application'
+    $outcome.checks += 'native-chinese-wizard-next-cancel'
     $outcome.status = 'passed'
 } catch {
     $outcome.error = $_.ToString()
