@@ -84,7 +84,7 @@ def test_overlapping_roots_do_not_duplicate_and_remove_only_index(library, pictu
     assert len(library.search(inside)) == 2
     library.remove_root(root)
     assert library.stats().files == 1
-    assert library.roots() == [str(nested.resolve())]
+    assert [Path(path) for path in library.roots()] == [nested.resolve()]
     assert inside.is_file() and outside.is_file()
     library.remove_root(nested)
     assert library.stats().files == 0
@@ -103,7 +103,7 @@ def test_failed_render_removes_stale_descriptors_and_can_retry(library, picture,
     assert library.stats().files == 0
     assert library.stats().pages == 0
     assert library.stats().failed == 1
-    assert library.failures()[0][0] == str(source)
+    assert Path(library.failures()[0][0]) == source.resolve()
     assert library.scan([root]).failed == 1  # Failed files are retried even if unchanged.
     picture.save(source)
     assert library.scan([root]).indexed == 1

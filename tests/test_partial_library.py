@@ -54,7 +54,7 @@ def test_legacy_index_backfills_once_preserving_records_and_originals(tmp_path, 
 
     monkeypatch.setattr(library_module, 'render_pages', track)
     result = reopened.search(query, mode='partial')[0]
-    assert result.path == str(source) and result.match_type == 'partial'
+    assert Path(result.path) == source.resolve() and result.match_type == 'partial'
     assert result.score > 90
     assert np.max(np.abs(np.array(result.match_region) - np.array((453/800, 299/600, 697/800, 503/600)))) < 0.015
     assert calls == [query, source]
@@ -82,7 +82,7 @@ def test_partial_screenshot_finds_matching_psd_psb_artboard(tmp_path, artboard_f
     library = open_library(tmp_path)
     assert library.scan([root]).failed == 0
     results = library.search(query, mode='partial', min_score=85)
-    assert len(results) == 1 and results[0].path == str(source)
+    assert len(results) == 1 and Path(results[0].path) == source.resolve()
     result = results[0]
     assert result.page_label == '画板 2：设计画板 2'
     assert np.max(np.abs(np.array(result.match_region) - np.array(crop) / (160, 120, 160, 120))) < 0.025
@@ -246,4 +246,4 @@ def test_thin_catalog_image_does_not_break_other_partial_matches(tmp_path, detai
     library = open_library(tmp_path)
     report = library.scan([root])
     assert report.indexed == 2 and report.failed == 0
-    assert [result.path for result in library.search(query, mode='partial')] == [str(source)]
+    assert [Path(result.path) for result in library.search(query, mode='partial')] == [source.resolve()]

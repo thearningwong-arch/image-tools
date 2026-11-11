@@ -118,7 +118,7 @@ def test_desktop_scan_search_actions_export_and_reopen(window, tmp_path, monkeyp
     assert {row["完整路径"] for row in rows} == {result.path for result in window._results}
 
     reopened = Library(window.library.database_path, window.library.cache_dir)
-    assert reopened.roots() == [str(root.resolve())]
+    assert [Path(path) for path in reopened.roots()] == [root.resolve()]
     assert len(reopened.search(query)) == 3
     assert reopened.scan([root]).unchanged == 3
 
@@ -295,7 +295,7 @@ def test_partial_screenshot_mode_highlight_preview_export_and_return_to_whole_se
     assert not window.errors
     assert len(window._results) == 1
     result = window._results[0]
-    assert result.path == str(source) and result.match_region is not None
+    assert Path(result.path) == source.resolve() and result.match_region is not None
     assert '局部截图候选' in window.results_summary.text()
     card = window.results_content.findChildren(QFrame, 'resultCard')[0]
     assert any(label.text() == '局部截图命中' for label in card.findChildren(QLabel))

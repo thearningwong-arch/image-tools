@@ -30,7 +30,10 @@ jobs:
           if ($LASTEXITCODE -notin @(0, 3010)) { throw 'Ghostscript installation failed' }
       - name: Build candidate and run application regressions
         shell: pwsh
-        run: ./scripts/build_windows.ps1
+        run: |
+          python -m venv .venv
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create the Python 3.12 environment' }
+          ./scripts/build_windows.ps1
       - name: Check out the real previous application for upgrade testing
         uses: actions/checkout@v4
         with:
@@ -93,6 +96,8 @@ jobs:
               '```text' >> $env:GITHUB_STEP_SUMMARY
               $problem.InnerText >> $env:GITHUB_STEP_SUMMARY
               '```' >> $env:GITHUB_STEP_SUMMARY
+              $details = $problem.InnerText.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=$($problem.ParentNode.name)::$details"
             }
           }
           $lifecycle = 'build/installer-tests/installer-regression.json'
