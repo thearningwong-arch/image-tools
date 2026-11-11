@@ -197,9 +197,58 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 namespace ImageToolsInstallerTests {
+    public sealed class ShortcutData {
+        public string TargetPath;
+        public string WorkingDirectory;
+    }
     public static class InstallPaths {
+        // IShellLinkW: preserve the native vtable order through the two getters
+        // used below. IPersistFile.Load takes a Unicode absolute link filename.
+        [ComImport, Guid("000214F9-0000-0000-C000-000000000046"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellLinkW {
+            void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path,
+                int maximum, IntPtr findData, uint flags);
+            void GetIDList(out IntPtr idList);
+            void SetIDList(IntPtr idList);
+            void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder description, int maximum);
+            void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string description);
+            void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder directory, int maximum);
+        }
+        public static ShortcutData ReadShortcut(string path) {
+            ShortcutData data = null;
+            Exception failure = null;
+            var thread = new Thread(delegate() {
+                object instance = null;
+                try {
+                    instance = Activator.CreateInstance(Type.GetTypeFromCLSID(
+                        new Guid("00021401-0000-0000-C000-000000000046"), true));
+                    ((System.Runtime.InteropServices.ComTypes.IPersistFile)instance).Load(Path.GetFullPath(path), 0);
+                    var link = (IShellLinkW)instance;
+                    var target = new StringBuilder(32768);
+                    var directory = new StringBuilder(32768);
+                    link.GetPath(target, target.Capacity, IntPtr.Zero, 4); // SLGP_RAWPATH
+                    link.GetWorkingDirectory(directory, directory.Capacity);
+                    if (target.Length == 0) throw new InvalidDataException("IShellLinkW returned an empty target");
+                    data = new ShortcutData { TargetPath = target.ToString(), WorkingDirectory = directory.ToString() };
+                } catch (Exception error) {
+                    failure = error;
+                } finally {
+                    if (instance != null && Marshal.IsComObject(instance)) Marshal.FinalReleaseComObject(instance);
+                }
+            });
+            // Do not depend on pwsh's default MTA or WScript.Shell's automation
+            // wrapper when loading Unicode links created by native Inno Setup.
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.IsBackground = true;
+            thread.Start();
+            if (!thread.Join(15000)) throw new TimeoutException("Native shell-link loading timed out");
+            if (failure != null) throw new InvalidDataException("Native shell-link loading failed", failure);
+            return data;
+        }
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern uint GetLongPathNameW(string shortPath, StringBuilder longPath, uint maximum);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -234,28 +283,37 @@ namespace ImageToolsInstallerTests {
 }
 '@
     }
-    $shell = New-Object -ComObject WScript.Shell
     foreach ($link in $script:Links) {
         Require (Test-Path -LiteralPath $link) "Shortcut is missing: $link"
-        $shortcut = $shell.CreateShortcut($link)
-        if ($link -notmatch '卸载') {
-            $actual = $shortcut.TargetPath
-            $expected = $script:Executable
-            $canonicalActual = $null
-            $canonicalExpected = $null
-            try {
-                $canonicalActual = [ImageToolsInstallerTests.InstallPaths]::CanonicalExistingFile($actual)
-                $canonicalExpected = [ImageToolsInstallerTests.InstallPaths]::CanonicalExistingFile($expected)
-            } catch {
-                throw ("Shortcut target cannot be resolved: $link; actual=[$actual]; expected=[$expected]; " +
-                    "expanded_actual=[$canonicalActual]; expanded_expected=[$canonicalExpected]; " +
-                    "WorkingDirectory=[$($shortcut.WorkingDirectory)]; cause=$($_.Exception.Message)")
-            }
-            Require ([string]::Equals($canonicalActual, $canonicalExpected, [StringComparison]::OrdinalIgnoreCase)) (
-                "Shortcut target is wrong: $link; actual=[$actual]; expected=[$expected]; " +
-                "expanded_actual=[$canonicalActual]; expanded_expected=[$canonicalExpected]; " +
-                "WorkingDirectory=[$($shortcut.WorkingDirectory)]")
+        $linkBytes = [IO.File]::ReadAllBytes($link)
+        $linkBase64 = [Convert]::ToBase64String($linkBytes)
+        if ($linkBytes.Length -lt 76) {
+            throw "Shortcut file is empty or truncated: $link; link_bytes=$($linkBytes.Length); link_base64=$linkBase64"
         }
+        $shortcut = $null
+        try {
+            $shortcut = [ImageToolsInstallerTests.InstallPaths]::ReadShortcut($link)
+        } catch {
+            throw ("Cannot read native Unicode shell link: $link; link_bytes=$($linkBytes.Length); " +
+                "link_base64=$linkBase64; cause=$($_.Exception.ToString())")
+        }
+        $actual = $shortcut.TargetPath
+        $expected = if ($link -match '卸载') { $entry.UninstallString.Trim('"') } else { $script:Executable }
+        $canonicalActual = $null
+        $canonicalExpected = $null
+        try {
+            $canonicalActual = [ImageToolsInstallerTests.InstallPaths]::CanonicalExistingFile($actual)
+            $canonicalExpected = [ImageToolsInstallerTests.InstallPaths]::CanonicalExistingFile($expected)
+        } catch {
+            throw ("Shortcut target cannot be resolved: $link; actual=[$actual]; expected=[$expected]; " +
+                "expanded_actual=[$canonicalActual]; expanded_expected=[$canonicalExpected]; " +
+                "WorkingDirectory=[$($shortcut.WorkingDirectory)]; link_bytes=$($linkBytes.Length); " +
+                "link_base64=$linkBase64; cause=$($_.Exception.Message)")
+        }
+        Require ([string]::Equals($canonicalActual, $canonicalExpected, [StringComparison]::OrdinalIgnoreCase)) (
+            "Shortcut target is wrong: $link; actual=[$actual]; expected=[$expected]; " +
+            "expanded_actual=[$canonicalActual]; expanded_expected=[$canonicalExpected]; " +
+            "WorkingDirectory=[$($shortcut.WorkingDirectory)]; link_bytes=$($linkBytes.Length); link_base64=$linkBase64")
     }
 }
 
