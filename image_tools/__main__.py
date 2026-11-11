@@ -14,9 +14,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--data-dir", type=Path, default=None, help="索引与缩略图目录（不存放原文件）")
     parser.add_argument("--max-pages", type=int, default=20, help="每份 PDF/AI/TIFF 最多索引页数，默认 20")
+    parser.add_argument("--self-test-report", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.max_pages < 1:
         parser.error("--max-pages 必须大于 0")
+    if args.self_test_report is not None:
+        if args.data_dir is None:
+            parser.error("--self-test-report 必须指定独立的 --data-dir 测试目录")
+        from image_tools.self_test import run
+        return run(args.data_dir, args.self_test_report)
 
     from PySide6.QtWidgets import QApplication, QMessageBox
     from image_tools.library import Library

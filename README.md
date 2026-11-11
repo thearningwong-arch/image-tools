@@ -6,6 +6,16 @@
 
 ## 在 Windows 上使用
 
+### 安装包（无需安装 Python）
+
+在本仓库的 [Releases](https://github.com/thearningwong-arch/image-tools/releases) 中下载 `ImageTools-版本号-win-x64-setup.exe`，双击后按中文向导安装，完成后从桌面或开始菜单打开“图迹”。适用于 Windows 10/11 64 位；安装到当前用户目录，不需要管理员权限。安装包内置 Python、Qt 及图片检索、PSD/PSB、PDF 兼容 AI 所需依赖，安装后可离线使用。
+
+升级时直接运行新版安装包。现有索引继续位于 `%LOCALAPPDATA%\ImageTools`，升级、在 Windows“已安装的应用”中卸载、以及重新安装均保留该目录；原素材文件也不会被删除。若以前用源码版，使用同一 Windows 账号和默认索引目录即可沿用；自定义索引目录需继续使用 `--data-dir` 或 `IMAGE_TOOLS_DATA_DIR`。
+
+EPS / 旧版 PostScript AI 仍需下文的可选 Ghostscript，不包含在安装包内。安装文件尚未做商业代码签名；Windows 可能显示未知发布者。请从本仓库 Releases 下载，并可用附件 `.sha256` 核对文件。
+
+### 从源码运行（开发者）
+
 1. 安装 **64 位 Python 3.12–3.15**（建议 3.12/3.13），安装时勾选 **Add Python to PATH**。
 2. 把本项目解压到本机文件夹，双击 **`start-windows.bat`**。首次启动自动建立独立环境并下载依赖，需要联网。
 3. 添加存放图片/设计文件的文件夹，点击建立或更新索引，等待扫描完成。
@@ -107,9 +117,9 @@ CSV 保留原有列，增加“命中左/上/右/下边界（0-1）”四列；�
 
 ## 打包为 EXE
 
-在 **Windows 本机**双击 `build-windows.bat`，构建成功后运行 `dist\ImageTools\ImageTools.exe`。分发时需要复制整个 `dist\ImageTools` 文件夹。该文件夹内含 Python 运行时，使用者无需另装 Python；Ghostscript 仍是独立的可选组件。
+在 **Windows 构建机**安装 64 位 Python 3.12 和 Inno Setup 6.5 或更新版本，双击 `build-windows.bat`。简体中文语言资源已随仓库提供。脚本安装固定版本依赖、运行回归测试、用 PyInstaller 打包运行时，再生成 `dist\ImageTools-版本号-win-x64-setup.exe`。普通用户只需要这个安装文件，不需要 Python 或 Inno Setup。详细构建及验收方法见 [Windows 安装包说明](docs/WINDOWS_INSTALLER.md)。
 
-Windows EXE 必须在 Windows 上构建。云端 Linux 的验证不等于已验证 Windows 安装、原生资源管理器行为或 EXE 打包；这些仍需在目标 PC 上验收。
+仓库的 Windows installer 工作流在 Windows 机器上构建、运行应用回归、安装真实旧版再升级、运行安装后的 EXE，并检查卸载及重装保留索引。通过后上传安装文件；推送与应用版本一致的 `v版本号` 标签时，再自动发布到 Releases。构建和验收报告保留在对应 Actions 运行中。Windows 10/11 实际用户电脑上的原生文件管理器、公司共享盘和大素材库仍需目标环境验收。
 
 ## 开发与验证
 
