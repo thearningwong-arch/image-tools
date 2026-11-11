@@ -18,9 +18,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: python
         with:
           python-version: '3.12'
           architecture: x64
+      - name: Restore compiled Windows installers
+        id: installer-cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            dist/*-setup.exe
+            dist/*-setup.exe.sha256
+            build/previous-installer/*-setup.exe
+            build/previous-installer/*-setup.exe.sha256
+          # Lifecycle-test edits may reuse the same binaries, but every input to
+          # either installer build must invalidate them. Hash source files only,
+          # before Python has generated __pycache__ directories.
+          key: windows-installers-v1-${{ runner.os }}-x64-python${{ steps.python.outputs.python-version }}-inno6.7.4-baseline-c940d732868c11cf15cf264d8cc9a28c5f2045ea-${{ hashFiles('image_tools/**', 'installer/**', 'scripts/desktop_entry.py', 'scripts/build_windows.ps1', 'scripts/windows/compile-installer.ps1', 'build-windows.bat', 'requirements.txt', 'requirements-dev.txt', 'pyproject.toml') }}
       - name: Install installer compiler and optional document renderer
         shell: pwsh
         run: |
@@ -37,7 +52,24 @@ jobs:
           try {
             python -m venv .venv
             if ($LASTEXITCODE -ne 0) { throw 'Could not create the Python 3.12 environment' }
-            ./scripts/build_windows.ps1
+            if ('${{ steps.installer-cache.outputs.cache-hit }}' -eq 'true') {
+              # A cache hit skips compilation only. Reinstall dependencies and
+              # execute the complete current source suite on this Windows host.
+              & .venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+              if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+              & .venv/Scripts/python.exe -m pip check
+              if ($LASTEXITCODE -ne 0) { throw 'Dependency consistency check failed' }
+              $previousPlatform = $env:QT_QPA_PLATFORM
+              try {
+                $env:QT_QPA_PLATFORM = 'offscreen'
+                & .venv/Scripts/python.exe -m pytest -q -ra --junitxml=build/test-results/pytest.xml
+                if ($LASTEXITCODE -ne 0) { throw 'Windows application regressions failed' }
+              } finally {
+                $env:QT_QPA_PLATFORM = $previousPlatform
+              }
+            } else {
+              ./scripts/build_windows.ps1
+            }
           } catch {
             $buildError = $_
           } finally {
@@ -50,11 +82,13 @@ jobs:
             throw $buildError
           }
       - name: Check out the real previous application for upgrade testing
+        if: steps.installer-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           ref: c940d732868c11cf15cf264d8cc9a28c5f2045ea
           path: build/previous-source
       - name: Build previous 0.2.0 application and installer
+        if: steps.installer-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $python = (Resolve-Path '.venv/Scripts/python.exe').Path
@@ -64,6 +98,35 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Previous application build failed' }
           } finally { Pop-Location }
           ./scripts/windows/compile-installer.ps1 -Version '0.2.0' -AppDir (Resolve-Path 'build/previous-source/dist/ImageTools').Path -OutputDir (Join-Path $PWD 'build/previous-installer')
+      - name: Save compiled installers before lifecycle testing
+        if: steps.installer-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            dist/*-setup.exe
+            dist/*-setup.exe.sha256
+            build/previous-installer/*-setup.exe
+            build/previous-installer/*-setup.exe.sha256
+          # Reuse the key resolved before compilation, never a hash recalculated
+          # after build tools have written generated files into the checkout.
+          key: ${{ steps.installer-cache.outputs.cache-primary-key }}
+      - name: Verify restored installer checksums
+        if: steps.installer-cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          $version = & .venv/Scripts/python.exe -c 'from image_tools import __version__; print(__version__)'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the candidate version' }
+          foreach ($file in @("dist/ImageTools-$version-win-x64-setup.exe", 'build/previous-installer/ImageTools-0.2.0-win-x64-setup.exe')) {
+            if (-not (Test-Path -LiteralPath $file) -or -not (Test-Path -LiteralPath ($file + '.sha256'))) {
+              throw "Cached installer or its checksum is missing: $file"
+            }
+            $expected = ((Get-Content -LiteralPath ($file + '.sha256') -Raw).Trim() -split '\s+')[0]
+            $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+            if ($expected -notmatch '^[a-fA-F0-9]{64}$' -or $actual -ne $expected) {
+              throw "Cached installer checksum mismatch: $file"
+            }
+          }
       - name: Install, upgrade, test the frozen app, uninstall and reinstall
         shell: pwsh
         run: |
@@ -93,6 +156,7 @@ jobs:
           path: |
             build/test-results/**
             build/installer-tests/**
+            !build/installer-tests/installed*/**
           if-no-files-found: warn
           retention-days: 30
       - name: Summarize Windows test failures

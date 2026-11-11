@@ -190,15 +190,75 @@ function Check-Install([string]$Version) {
     Require ($entry.DisplayVersion -eq $Version) "Wrong installed version: $($entry.DisplayVersion)"
     Require ($entry.UninstallString -match 'unins[0-9]+\.exe') 'System uninstall command is missing'
     Require ((Split-Path $entry.UninstallString.Trim('"') -Parent) -eq $script:InstallRoot) 'Wrong uninstall directory'
+    if ($null -eq ('ImageToolsInstallerTests.InstallPaths' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace ImageToolsInstallerTests {
+    public static class InstallPaths {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetLongPathNameW(string shortPath, StringBuilder longPath, uint maximum);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(string path, uint access, uint shareMode,
+            IntPtr securityAttributes, uint creationDisposition, uint flags, IntPtr templateFile);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder path, uint maximum, uint flags);
+        public static string CanonicalExistingFile(string path) {
+            string expanded = Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+            var longPath = new StringBuilder(32768);
+            uint count = GetLongPathNameW(expanded, longPath, (uint)longPath.Capacity);
+            if (count == 0 || count >= longPath.Capacity)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot expand existing path: " + expanded);
+            // Resolve an existing file handle as well as expanding DOS 8.3 names.
+            // This compares the actual destination path, not another file with
+            // coincidentally identical contents or an unresolved shortcut path.
+            using (var file = CreateFileW(longPath.ToString(), 0, 7, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+                if (file.IsInvalid)
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot open existing path: " + longPath);
+                var finalPath = new StringBuilder(32768);
+                count = GetFinalPathNameByHandleW(file, finalPath, (uint)finalPath.Capacity, 0);
+                if (count == 0 || count >= finalPath.Capacity)
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot resolve existing path: " + longPath);
+                string result = finalPath.ToString();
+                if (result.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+                    return @"\\" + result.Substring(8);
+                if (result.StartsWith(@"\\?\", StringComparison.Ordinal)) return result.Substring(4);
+                return result;
+            }
+        }
+    }
+}
+'@
+    }
     $shell = New-Object -ComObject WScript.Shell
     foreach ($link in $script:Links) {
         Require (Test-Path -LiteralPath $link) "Shortcut is missing: $link"
         $shortcut = $shell.CreateShortcut($link)
         if ($link -notmatch '卸载') {
-            Require ($shortcut.TargetPath -eq $script:Executable) "Shortcut target is wrong: $link"
+            $actual = $shortcut.TargetPath
+            $expected = $script:Executable
+            $canonicalActual = $null
+            $canonicalExpected = $null
+            try {
+                $canonicalActual = [ImageToolsInstallerTests.InstallPaths]::CanonicalExistingFile($actual)
+                $canonicalExpected = [ImageToolsInstallerTests.InstallPaths]::CanonicalExistingFile($expected)
+            } catch {
+                throw ("Shortcut target cannot be resolved: $link; actual=[$actual]; expected=[$expected]; " +
+                    "expanded_actual=[$canonicalActual]; expanded_expected=[$canonicalExpected]; " +
+                    "WorkingDirectory=[$($shortcut.WorkingDirectory)]; cause=$($_.Exception.Message)")
+            }
+            Require ([string]::Equals($canonicalActual, $canonicalExpected, [StringComparison]::OrdinalIgnoreCase)) (
+                "Shortcut target is wrong: $link; actual=[$actual]; expected=[$expected]; " +
+                "expanded_actual=[$canonicalActual]; expanded_expected=[$canonicalExpected]; " +
+                "WorkingDirectory=[$($shortcut.WorkingDirectory)]")
         }
     }
 }
+
 function Install([string]$File, [string]$Name) {
     Invoke-Checked $File @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
         '/TASKS=desktopicon', ('/DIR=' + (Quote $script:InstallRoot)),
