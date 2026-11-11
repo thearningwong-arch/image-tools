@@ -109,9 +109,9 @@ def test_screenshot_finds_real_raster_photoshop_pdf_ai_and_postscript_sources(tm
     originals = {p: p.read_bytes() for p in root.iterdir()}
     library = open_library(tmp_path)
     assert library.scan([root]).failed == 0
-    results = {Path(result.path).name: result for result in library.search(query, mode='partial', min_score=85)}
-    assert set(results) == expected
-    assert results['画册.pdf'].page == results['PDF兼容.ai'].page == 2
+    results = {Path(result.path): result for result in library.search(query, mode='partial', min_score=85)}
+    assert set(results) == {root / name for name in expected}
+    assert results[root / '画册.pdf'].page == results[root / 'PDF兼容.ai'].page == 2
     for result in results.values():
         assert np.max(np.abs(np.array(result.match_region) - (np.array((453, 299, 697, 503)) / (800, 600, 800, 600)))) < 0.02
     assert {p: p.read_bytes() for p in root.iterdir()} == originals
