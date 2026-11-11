@@ -77,6 +77,31 @@ jobs:
             build/installer-tests/**
           if-no-files-found: warn
           retention-days: 30
+      - name: Summarize Windows test failures
+        if: always()
+        shell: pwsh
+        run: |
+          $report = 'build/test-results/pytest.xml'
+          if (Test-Path $report) {
+            [xml]$junit = Get-Content $report -Raw
+            '## Windows application regression' >> $env:GITHUB_STEP_SUMMARY
+            foreach ($suite in $junit.testsuites.testsuite) {
+              "Tests: $($suite.tests); failures: $($suite.failures); errors: $($suite.errors); skipped: $($suite.skipped)" >> $env:GITHUB_STEP_SUMMARY
+            }
+            foreach ($problem in $junit.SelectNodes('//failure | //error')) {
+              "### $($problem.ParentNode.name)" >> $env:GITHUB_STEP_SUMMARY
+              '```text' >> $env:GITHUB_STEP_SUMMARY
+              $problem.InnerText >> $env:GITHUB_STEP_SUMMARY
+              '```' >> $env:GITHUB_STEP_SUMMARY
+            }
+          }
+          $lifecycle = 'build/installer-tests/installer-regression.json'
+          if (Test-Path $lifecycle) {
+            '## Windows installer regression' >> $env:GITHUB_STEP_SUMMARY
+            '```json' >> $env:GITHUB_STEP_SUMMARY
+            Get-Content $lifecycle -Raw >> $env:GITHUB_STEP_SUMMARY
+            '```' >> $env:GITHUB_STEP_SUMMARY
+          }
 
   release:
     name: Publish tested installer
