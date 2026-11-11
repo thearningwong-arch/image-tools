@@ -43,6 +43,7 @@ namespace ImageToolsInstallerTests {
         public string ClassName;
         public uint ProcessId;
         public string ProcessName;
+        public int ControlId;
     }
     public static class NativeWindows {
         private delegate bool EnumCallback(IntPtr window, IntPtr parameter);
@@ -52,6 +53,7 @@ namespace ImageToolsInstallerTests {
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(IntPtr window, StringBuilder text, int maximum);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(IntPtr window, StringBuilder text, int maximum);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+        [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr window);
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern IntPtr SendMessageTimeoutW(IntPtr window, uint message, UIntPtr wParam,
             StringBuilder text, uint flags, uint timeout, out UIntPtr result);
@@ -75,7 +77,8 @@ namespace ImageToolsInstallerTests {
             try { processName = Process.GetProcessById((int)processId).ProcessName; }
             catch { processName = "exited"; }
             return new NativeWindow { Handle = window, Title = text.ToString(),
-                ClassName = className.ToString(), ProcessId = processId, ProcessName = processName };
+                ClassName = className.ToString(), ProcessId = processId, ProcessName = processName,
+                ControlId = GetDlgCtrlID(window) };
         }
         public static NativeWindow[] VisibleWindows() {
             var windows = new List<NativeWindow>();
@@ -151,9 +154,11 @@ namespace ImageToolsInstallerTests {
         while (-not $wizardProcess.HasExited -and [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 200
             foreach ($dialog in [ImageToolsInstallerTests.NativeWindows]::VisibleWindows()) {
-                if ($dialog.ProcessId -ne $wizard.ProcessId) { continue }
+                if ($dialog.ProcessId -ne $wizard.ProcessId -or $dialog.Title -notmatch '退出安装') { continue }
                 foreach ($button in [ImageToolsInstallerTests.NativeWindows]::VisibleChildren($dialog.Handle)) {
-                    if ($button.ClassName -match 'Button' -and $button.Title -match '^&?是') {
+                    # IDYES is 6. Native message-box buttons use the Windows
+                    # language (for example &Yes on an English test machine).
+                    if ($button.ClassName -match 'Button' -and $button.ControlId -eq 6) {
                         $confirmationSeen = $true
                         $evidence.exit_confirmation = $dialog.Title
                         $evidence.confirm_button = $button.Title
