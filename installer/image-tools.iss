@@ -88,5 +88,5 @@ begin
     Result := '程序安装目录不能与索引目录重叠。请使用默认安装目录。';
 end;
 
-; Intentionally no [UninstallDelete] or custom data cleanup. The application
-; writes its index outside {app}; Inno removes only files installed by setup.
+{ Intentionally no [UninstallDelete] or custom data cleanup. The application
+  writes its index outside the program folder; Inno removes only installed files. }

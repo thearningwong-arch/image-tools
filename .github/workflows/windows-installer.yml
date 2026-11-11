@@ -31,9 +31,24 @@ jobs:
       - name: Build candidate and run application regressions
         shell: pwsh
         run: |
-          python -m venv .venv
-          if ($LASTEXITCODE -ne 0) { throw 'Could not create the Python 3.12 environment' }
-          ./scripts/build_windows.ps1
+          New-Item -ItemType Directory -Path build/test-results -Force | Out-Null
+          $buildError = $null
+          Start-Transcript -Path build/test-results/windows-build.log | Out-Null
+          try {
+            python -m venv .venv
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create the Python 3.12 environment' }
+            ./scripts/build_windows.ps1
+          } catch {
+            $buildError = $_
+          } finally {
+            Stop-Transcript | Out-Null
+          }
+          if ($null -ne $buildError) {
+            $tail = (Get-Content build/test-results/windows-build.log -Tail 80) -join "`n"
+            $details = ($tail + "`n" + $buildError).Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Windows candidate build::$details"
+            throw $buildError
+          }
       - name: Check out the real previous application for upgrade testing
         uses: actions/checkout@v4
         with:
@@ -110,6 +125,13 @@ jobs:
             if ($outcome.status -ne 'passed') {
               $details = $outcome.error.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
               Write-Output "::error title=Windows installer lifecycle::$details"
+            }
+          }
+          Get-ChildItem build/installer-tests/*-app.json -ErrorAction SilentlyContinue | ForEach-Object {
+            $result = Get-Content $_.FullName -Raw | ConvertFrom-Json
+            if ($result.status -ne 'passed') {
+              $details = $result.error.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Installed executable regression::$details"
             }
           }
 
