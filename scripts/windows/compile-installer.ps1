@@ -40,8 +40,16 @@ $installer = Join-Path $OutputDir "ImageTools-$Version-win-x64-setup.exe"
 if (Test-Path -LiteralPath $installer) { Remove-Item -LiteralPath $installer -Force }
 $logDir = Join-Path $repo 'build\test-results'
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
-$compilerOutput = & $IsccPath "/DAppVersion=$Version" "/DBuildRoot=$AppDir" "/DOutputRoot=$OutputDir" (Join-Path $repo 'installer\image-tools.iss') 2>&1
-$compilerExitCode = $LASTEXITCODE
+$previousErrorAction = $ErrorActionPreference
+try {
+    # Windows PowerShell 5.1 wraps native stderr in ErrorRecord objects. Capture
+    # the compiler's complete diagnostic and use its actual process exit code.
+    $ErrorActionPreference = 'Continue'
+    $compilerOutput = & $IsccPath "/DAppVersion=$Version" "/DBuildRoot=$AppDir" "/DOutputRoot=$OutputDir" (Join-Path $repo 'installer\image-tools.iss') 2>&1
+    $compilerExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousErrorAction
+}
 $compilerOutput | ForEach-Object { Write-Host $_ }
 $compilerOutput | Set-Content -LiteralPath (Join-Path $logDir "installer-$Version.log") -Encoding UTF8
 if ($compilerExitCode -ne 0) {
