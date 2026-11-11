@@ -50,7 +50,7 @@ jobs:
         shell: pwsh
         run: |
           $version = & .venv/Scripts/python.exe -c 'from image_tools import __version__; print(__version__)'
-          ./scripts/windows/test-installer.ps1 -PreviousInstaller "build/previous-installer/ImageTools-0.2.0-win-x64-setup.exe" -Installer "dist/ImageTools-$version-win-x64-setup.exe" -Python (Resolve-Path '.venv/Scripts/python.exe').Path
+          ./scripts/windows/test-installer.ps1 -PreviousInstaller "build/previous-installer/ImageTools-0.2.0-win-x64-setup.exe" -Installer "dist/ImageTools-$version-win-x64-setup.exe" -ExpectedVersion $version -Python (Resolve-Path '.venv/Scripts/python.exe').Path
       - name: Generate download checksums
         shell: pwsh
         run: |
@@ -97,6 +97,14 @@ jobs:
         with:
           name: ImageTools-windows-x64-installer
           path: release-assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: Windows-validation-reports
+          path: validation-evidence
+      - name: Package Windows validation evidence
+        run: |
+          cd validation-evidence
+          zip -r ../release-assets/Windows-validation-reports.zip .
       - name: Publish downloadable setup file
         env:
           GH_TOKEN: ${{ github.token }}
