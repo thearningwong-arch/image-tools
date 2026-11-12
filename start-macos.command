@@ -18,12 +18,12 @@ fi
 python_exe="${IMAGE_TOOLS_PYTHON:-}"
 source "$repo/scripts/macos/python_env.sh"
 python_exe="$(image_tools_find_python "$python_exe")"
-"$python_exe" -c 'import sys, struct; assert (3,12) <= sys.version_info[:2] < (3,16) and struct.calcsize("P") == 8, "Python 3.12–3.15 (64-bit) required"'
+"$python_exe" -c 'import sys, struct; assert (3,12) <= sys.version_info[:2] < (3,14) and struct.calcsize("P") == 8, "Python 3.12–3.13 (64-bit) required by the verified macOS Qt runtime"'
 if [[ ! -x .venv-macos/bin/python ]]; then
     "$python_exe" -m venv .venv-macos
 fi
 python_exe="$repo/.venv-macos/bin/python"
-"$python_exe" -c 'import sys; assert sys.platform == "darwin" and (3,12) <= sys.version_info[:2] < (3,16), "Remove an incompatible .venv-macos and retry"'
+"$python_exe" -c 'import sys; assert sys.platform == "darwin" and (3,12) <= sys.version_info[:2] < (3,14), "Remove an incompatible .venv-macos and retry with Python 3.12–3.13"'
 requirements_hash="$(shasum -a 256 requirements.txt | cut -d ' ' -f 1)"
 hash_file="$repo/.venv-macos/.image-tools-requirements.sha256"
 if [[ ! -f "$hash_file" ]] || [[ "$(cat "$hash_file")" != "$requirements_hash" ]]; then

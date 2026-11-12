@@ -21,12 +21,12 @@ while [[ $# -gt 0 ]]; do
 done
 source "$repo/scripts/macos/python_env.sh"
 python_exe="$(image_tools_find_python "$python_exe")"
-"$python_exe" -c 'import sys, struct; assert (3,12) <= sys.version_info[:2] < (3,16), "Python 3.12–3.15 required"; assert struct.calcsize("P") == 8, "64-bit Python required"'
+"$python_exe" -c 'import sys, struct; assert (3,12) <= sys.version_info[:2] < (3,14), "Python 3.12–3.13 required by the verified macOS Qt runtime"; assert struct.calcsize("P") == 8, "64-bit Python required"'
 if [[ ! -x .venv-macos/bin/python ]]; then
     "$python_exe" -m venv .venv-macos
 fi
 python_exe="$repo/.venv-macos/bin/python"
-"$python_exe" -c 'import sys; assert (3,12) <= sys.version_info[:2] < (3,16), "Remove an incompatible .venv-macos and retry"'
+"$python_exe" -c 'import sys; assert (3,12) <= sys.version_info[:2] < (3,14), "Remove an incompatible .venv-macos and retry with Python 3.12–3.13"'
 if [[ "$skip_install" == 0 ]]; then
     "$python_exe" -m pip install -r requirements-dev.txt
 fi

@@ -56,7 +56,11 @@ def minimum_macos(app: Path, baseline: str = "14.0") -> str:
                     packed = payload.version
                 else:
                     continue
-                required = max(required, (packed >> 16, (packed >> 8) & 255, packed & 255))
+                dependency_minimum = (packed >> 16, (packed >> 8) & 255, packed & 255)
+                if dependency_minimum > required:
+                    print(f"Minimum macOS {'.'.join(map(str, dependency_minimum))}: "
+                          f"{binary.relative_to(app)}", flush=True)
+                    required = dependency_minimum
     return ".".join(map(str, required[:2] if required[2] == 0 else required))
 
 
@@ -93,8 +97,8 @@ def notarize(artifact: Path, profile: str, report: Path) -> None:
 def main() -> None:
     if sys.platform != "darwin":
         raise SystemExit("Build macOS bundles on a Mac; cross-compilation is unsupported.")
-    if not (3, 12) <= sys.version_info[:2] < (3, 16):
-        raise SystemExit("Python 3.12–3.15 is required.")
+    if not (3, 12) <= sys.version_info[:2] < (3, 14):
+        raise SystemExit("Python 3.12–3.13 is required by the verified macOS Qt runtime.")
     arch = platform.machine()
     if arch not in {"arm64", "x86_64"}:
         raise SystemExit(f"Unsupported Python architecture: {arch}")

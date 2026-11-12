@@ -4,7 +4,7 @@
 
 ## Mac 版适配与安装包流程（2026-11-12）
 
-沿用现有 Python/PySide6、SQLite 与本地检索架构，新增 Mac 应用包、DMG 和校验文件的构建流程，并分别面向 Apple 芯片与 Intel 构建。固定 PySide6/Qt 与 Intel OpenCV 依赖要求 macOS 14+，较旧系统尚未开展依赖兼容验证。Mac 运行适配覆盖 Finder 定位、默认数据目录、中文字体及快捷键、从 Finder 启动时的 Ghostscript 发现和平台提示。详细安装、权限、共享卷及构建步骤见 [Mac 版说明](MACOS.md)。
+沿用现有 Python/PySide6、SQLite 与本地检索架构，新增 Mac 应用包、DMG 和校验文件的构建流程，并分别面向 Apple 芯片与 Intel 构建。Mac 构建以 macOS 14 为最低系统，Intel OpenCV 依赖也要求 14.0，较旧系统尚未开展依赖兼容验证。Mac 运行适配覆盖 Finder 定位、默认数据目录、中文字体及快捷键、从 Finder 启动时的 Ghostscript 发现和平台提示。详细安装、权限、共享卷及构建步骤见 [Mac 版说明](MACOS.md)。
 
 构建流程在 macOS 上运行固定依赖的源码回归，并从复制后的 `.app` 内调用冻结程序自测，检查核心依赖、真实 Qt 窗口、PNG/PSD/PSB/PDF/AI 整图与局部检索、索引持久化及原文件哈希；同时检查应用二进制架构、实际最低系统要求和 DMG 只读挂载。升级、移除应用、重新复制后，验证独立索引仍可复用。默认仅为 ad hoc 签名；Developer ID 与 Apple 公证需要构建机已有证书和配置。
 

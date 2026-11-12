@@ -9,7 +9,8 @@ description = "Local desktop visual search for images and design source files"
 readme = "README.md"
 requires-python = ">=3.12,<3.16"
 dependencies = [
-  "PySide6-Essentials>=6.8,<7",
+  "PySide6-Essentials>=6.8,<7; sys_platform != 'darwin'",
+  "PySide6-Essentials==6.9.3; sys_platform == 'darwin'",
   "Pillow>=11,<13",
   "numpy>=2,<3",
   "psd-tools[composite]>=1.10,<2",

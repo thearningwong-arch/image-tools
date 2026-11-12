@@ -40,7 +40,7 @@ Mac 版沿用相同的本地索引、整图/局部截图检索、源文件预览
 
 Mac 索引位于 `~/Library/Application Support/ImageTools`。替换或移除应用会保留此目录及原素材；升级前关闭图迹再替换应用。首次访问桌面、文稿、下载、外置磁盘或网络卷时，按 macOS 提示授权。Finder 已挂载并可读取的共享卷可以添加为素材目录。
 
-开发者可在 macOS 14+ 安装 Python 3.12–3.15 后双击 `start-macos.command` 从源码运行，首次启动会创建独立环境并安装依赖；也可使用下文命令。在 Mac 构建机上运行 `bash scripts/build_macos.sh`（或双击 `build-macos.command`）生成安装镜像。签名、公证、Ghostscript、权限与完整验收步骤见 [Mac 版安装与构建说明](docs/MACOS.md)。
+开发者可在 macOS 14+ 安装 Python 3.12 或 3.13 后双击 `start-macos.command` 从源码运行，首次启动会创建独立环境并安装依赖；也可使用下文命令。在 Mac 构建机上运行 `bash scripts/build_macos.sh`（或双击 `build-macos.command`）生成安装镜像。签名、公证、Ghostscript、权限与完整验收步骤见 [Mac 版安装与构建说明](docs/MACOS.md)。
 
 ## 支持范围
 
