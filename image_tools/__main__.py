@@ -32,7 +32,8 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName("图迹 Image Tools")
     app.setOrganizationName("ImageTools")
     app.setApplicationVersion(__version__)
-    app.setStyle("Fusion")
+    if sys.platform != "darwin":
+        app.setStyle("Fusion")
     storage = (args.data_dir or data_directory()).expanduser().resolve()
     try:
         storage.mkdir(parents=True, exist_ok=True)

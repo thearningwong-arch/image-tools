@@ -28,7 +28,7 @@ def reveal_file(path: Path | str) -> None:
     if sys.platform == "win32":
         subprocess.Popen(["explorer.exe", "/select,", str(target)])
     elif sys.platform == "darwin":
-        subprocess.Popen(["open", "-R", str(target)])
+        subprocess.Popen(["/usr/bin/open", "-R", str(target)])
     else:
         # xdg-open has no portable select-file option.
         subprocess.Popen(["xdg-open", str(target.parent)])
@@ -41,6 +41,6 @@ def open_folder(path: Path | str) -> None:
     if sys.platform == "win32":
         subprocess.Popen(["explorer.exe", str(target)])
     elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(target)])
+        subprocess.Popen(["/usr/bin/open", str(target)])
     else:
         subprocess.Popen(["xdg-open", str(target)])

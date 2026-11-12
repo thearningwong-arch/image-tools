@@ -8,6 +8,7 @@ import re
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 from typing import Iterator
@@ -178,14 +179,19 @@ def _photoshop(path: Path) -> Iterator[RenderedPage]:
 
 
 def find_ghostscript() -> str | None:
-    """Find Ghostscript without assuming a fixed installed version on Windows."""
+    """Find Ghostscript, including installs outside a Finder-launched app's PATH."""
     override = os.environ.get("IMAGE_TOOLS_GHOSTSCRIPT")
     if override:
         candidate = Path(override).expanduser()
         if candidate.is_file():
             return str(candidate)
         return shutil.which(override)
-    for command in ("gswin64c", "gswin32c", "gs"):
+    commands = ("gswin64c", "gswin32c", "gs")
+    if sys.platform == "darwin":
+        # Finder does not read shell profiles. Check both Homebrew prefixes and
+        # MacPorts directly without changing PATH for the rest of the process.
+        commands = ("gs", "/opt/homebrew/bin/gs", "/usr/local/bin/gs", "/opt/local/bin/gs")
+    for command in commands:
         found = shutil.which(command)
         if found:
             return found
@@ -219,7 +225,13 @@ def _bounding_box(path: Path) -> tuple[float, float, float, float]:
 def _postscript(path: Path) -> Iterator[RenderedPage]:
     executable = find_ghostscript()
     if not executable:
-        raise RenderError("EPS / 旧版 AI 需要 Ghostscript；请安装 Windows 64 位 Ghostscript，或设置 IMAGE_TOOLS_GHOSTSCRIPT 为 gswin64c.exe 路径")
+        if sys.platform == "darwin":
+            installation = "请安装 macOS Ghostscript（例如 brew install ghostscript），或设置 IMAGE_TOOLS_GHOSTSCRIPT 为 gs 的完整路径"
+        elif sys.platform == "win32":
+            installation = "请安装 Windows 64 位 Ghostscript，或设置 IMAGE_TOOLS_GHOSTSCRIPT 为 gswin64c.exe 路径"
+        else:
+            installation = "请安装 Ghostscript，或设置 IMAGE_TOOLS_GHOSTSCRIPT 为 gs 的完整路径"
+        raise RenderError(f"EPS / 旧版 AI 需要 Ghostscript；{installation}")
     left, bottom, right, top = _bounding_box(path)
     width, height = right - left, top - bottom
     scale = min(2.0, MAX_PREVIEW_EDGE / max(width, height))

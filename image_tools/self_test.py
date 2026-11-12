@@ -1,4 +1,4 @@
-"""Explicit, isolated acceptance test for the frozen Windows executable.
+"""Explicit, isolated acceptance test for a frozen desktop executable.
 
 This is invoked only by the hidden --self-test-report developer switch, with an
 explicit test data directory. It exercises the dependencies from inside the
@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import platform
 import sys
 import traceback
 
@@ -121,6 +122,7 @@ def _exercise(storage: Path) -> dict:
         "whole_matches": len(whole),
         "partial_matches": len(partial),
         "qt_window": True,
+        "qt_platform": application.platformName(),
         "dependencies": {"numpy": np.__version__, "opencv": cv2.__version__,
                          "pdfium": str(pypdfium2.PYPDFIUM_INFO.version)},
         "source_sha256": originals,
@@ -131,6 +133,8 @@ def run(storage: Path, report_path: Path) -> int:
     report = {
         "status": "failed", "version": __version__,
         "frozen": bool(getattr(sys, "frozen", False)),
+        "platform": sys.platform,
+        "architecture": platform.machine(),
         "executable": str(Path(sys.executable).resolve()),
         "storage": str(storage.expanduser().resolve()),
     }

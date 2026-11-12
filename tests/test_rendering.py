@@ -1,5 +1,6 @@
 from pathlib import Path
 import struct
+from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 import pytest
@@ -98,6 +99,36 @@ def test_missing_ghostscript_has_actionable_error(tmp_path, monkeypatch):
     monkeypatch.setattr(rendering, "find_ghostscript", lambda: None)
     with pytest.raises(RenderError, match="需要 Ghostscript"):
         list(render_pages(path))
+
+
+@pytest.mark.parametrize("installed", ["/opt/homebrew/bin/gs", "/usr/local/bin/gs", "/opt/local/bin/gs"])
+def test_macos_finds_ghostscript_when_finder_path_omits_package_manager(monkeypatch, installed):
+    monkeypatch.setattr(rendering, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.delenv("IMAGE_TOOLS_GHOSTSCRIPT", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(rendering.shutil, "which", lambda command: installed if command == installed else None)
+    assert rendering.find_ghostscript() == installed
+
+
+def test_macos_ghostscript_override_takes_priority(tmp_path, monkeypatch):
+    executable = tmp_path / "custom tools" / "gs"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.setattr(rendering, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setenv("IMAGE_TOOLS_GHOSTSCRIPT", str(executable))
+    monkeypatch.setattr(rendering.shutil, "which", lambda command: "/opt/homebrew/bin/gs")
+    assert rendering.find_ghostscript() == str(executable)
+
+
+def test_macos_missing_ghostscript_explains_installation(tmp_path, monkeypatch):
+    path = tmp_path / "vector.eps"
+    path.write_text("%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 100\nshowpage\n")
+    monkeypatch.setattr(rendering, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(rendering, "find_ghostscript", lambda: None)
+    with pytest.raises(RenderError, match="brew install ghostscript") as error:
+        list(render_pages(path))
+    assert "gswin64c.exe" not in str(error.value)
 
 
 def test_corrupt_unsupported_and_missing_files_are_not_previews(tmp_path):

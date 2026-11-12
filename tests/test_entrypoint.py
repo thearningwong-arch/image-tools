@@ -1,5 +1,7 @@
 """Exercise the same application entry point used by Python and packaged builds."""
 import os
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -11,13 +13,17 @@ from image_tools import __main__
 from image_tools.ui import MainWindow
 
 
-def test_main_starts_real_window_with_configured_storage(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["darwin", "win32"])
+def test_main_starts_real_window_with_configured_storage(tmp_path, monkeypatch, platform):
     # Reuse Qt's singleton if other desktop tests have already created it.
     application = QApplication.instance() or QApplication([])
     application.setQuitOnLastWindowClosed(False)
     storage = tmp_path / "配置 索引"
     seen = []
     original_exec = QApplication.exec
+    set_style = Mock(wraps=application.setStyle)
+    monkeypatch.setattr(application, "setStyle", set_style)
+    monkeypatch.setattr(__main__, "sys", SimpleNamespace(platform=platform, argv=["ImageTools"]))
 
     def run_briefly():
         def inspect_and_close():
@@ -38,6 +44,10 @@ def test_main_starts_real_window_with_configured_storage(tmp_path, monkeypatch):
     assert __main__.main(["--data-dir", str(storage), "--max-pages", "7"]) == 0
     assert seen == [(storage.resolve(), 7)]
     assert (storage / "library.sqlite3").is_file()
+    if platform == "darwin":
+        set_style.assert_not_called()
+    else:
+        set_style.assert_called_once_with("Fusion")
 
 
 def test_invalid_page_limit_fails_before_starting_desktop():

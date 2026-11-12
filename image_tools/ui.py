@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+import sys
 import threading
 from typing import Callable
 
 from PySide6.QtCore import Qt, QThread, Signal, QSize, QTimer, QRectF
-from PySide6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QImageReader, QPixmap, QPainter, QColor, QPen
+from PySide6.QtGui import QAction, QCloseEvent, QDragEnterEvent, QDropEvent, QImageReader, QKeySequence, QPixmap, QPainter, QColor, QPen
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
@@ -26,7 +27,7 @@ MATCH_LABELS = {"identical": "文件完全相同", "preview": "预览一致", "s
 
 STYLE = """
 QMainWindow, QWidget#root { background: #f3f6f7; color: #142d35; }
-QWidget { font-family: 'Microsoft YaHei UI', 'Noto Sans CJK SC', sans-serif; font-size: 13px; }
+QWidget { font-family: 'PingFang SC', 'Microsoft YaHei UI', 'Noto Sans CJK SC', sans-serif; font-size: 13px; }
 QLabel { color: #142d35; background: transparent; }
 QLabel#brand { font-size: 25px; font-weight: 700; }
 QLabel#brandMark { background: #087f78; color: white; border-radius: 13px; font-size: 26px; font-weight: 700; }
@@ -166,10 +167,39 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.setStyleSheet(STYLE)
         self._build_ui()
+        if sys.platform == "darwin":
+            self._build_mac_menu()
         self._refresh_folders()
         self._refresh_stats()
         self._empty_results("从一张图片，找到本机里的文件", "添加素材文件夹并建立索引，再拖入一张图片开始查找。")
         self._set_busy(False)
+
+    def _build_mac_menu(self) -> None:
+        menu = self.menuBar().addMenu("文件")
+        self.query_action = QAction("选择查询图片…", self)
+        self.query_action.setShortcut(QKeySequence.StandardKey.Open)
+        self.query_action.triggered.connect(self.query_button.click)
+        menu.addAction(self.query_action)
+        self.add_folder_action = QAction("添加素材文件夹…", self)
+        self.add_folder_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self.add_folder_action.triggered.connect(self.add_folder_button.click)
+        menu.addAction(self.add_folder_action)
+        self.export_action = QAction("导出检索结果…", self)
+        self.export_action.setShortcut(QKeySequence.StandardKey.SaveAs)
+        self.export_action.triggered.connect(self.export_button.click)
+        menu.addAction(self.export_action)
+        menu.addSeparator()
+        self.close_action = QAction("关闭窗口", self)
+        self.close_action.setShortcut(QKeySequence.StandardKey.Close)
+        self.close_action.triggered.connect(self.close)
+        menu.addAction(self.close_action)
+        self.quit_action = QAction("退出图迹", self)
+        self.quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        self.quit_action.setMenuRole(QAction.MenuRole.QuitRole)
+        # Use the same cancellable close path as the window button. Quitting
+        # QApplication directly could destroy an active indexing thread.
+        self.quit_action.triggered.connect(self.close)
+        menu.addAction(self.quit_action)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -371,6 +401,10 @@ class MainWindow(QMainWindow):
         self.remove_folder_button.setEnabled(self.folder_list.currentRow() >= 0 and not busy)
         self.search_button.setEnabled(self._query is not None and not busy)
         self.export_button.setEnabled(bool(self._results) and not busy)
+        if hasattr(self, "query_action"):
+            self.query_action.setEnabled(not busy)
+            self.add_folder_action.setEnabled(not busy)
+            self.export_action.setEnabled(self.export_button.isEnabled())
 
     def _set_busy(self, busy: bool) -> None:
         for widget in (self.add_folder_button, self.query_button, self.folder_list, self.threshold, self.failures_button, self.search_mode):
@@ -653,7 +687,7 @@ class MainWindow(QMainWindow):
             region_button = QPushButton("查看命中区域")
             region_button.clicked.connect(lambda checked=False, item=result: self._show_match_region(item))
             actions.addWidget(region_button)
-        reveal = QPushButton("资源管理器中定位")
+        reveal = QPushButton("Finder 中定位" if sys.platform == "darwin" else "资源管理器中定位")
         reveal.clicked.connect(lambda checked=False, path=result.path: self._reveal(path))
         actions.addWidget(reveal)
         copy = QPushButton("复制路径")
