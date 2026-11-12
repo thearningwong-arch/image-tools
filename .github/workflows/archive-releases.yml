@@ -1,0 +1,39 @@
+name: Archive installers and logs to Releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to publish or extend
+        required: true
+        default: v0.2.1
+      macos_run_id:
+        description: Successful macOS application run (optional)
+        default: '43166369089'
+      windows_run_id:
+        description: Successful Windows installer run (optional)
+        default: '43166369084'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: archive-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and preserve installers, reports and retained Actions logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          MACOS_RUN_ID: ${{ inputs.macos_run_id }}
+          WINDOWS_RUN_ID: ${{ inputs.windows_run_id }}
+        run: python3 scripts/archive_release.py
+
