@@ -6,12 +6,24 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      archive_release:
+        description: Archive existing verified packages instead of rebuilding
+        type: boolean
+        default: false
+      release_tag:
+        default: v0.2.1
+      macos_run_id:
+        default: '43166369089'
+      windows_run_id:
+        default: '43166369084'
 
 permissions:
   contents: read
 
 jobs:
   windows:
+    if: github.event_name != 'workflow_dispatch' || !inputs.archive_release
     name: Build and test Windows x64 installer
     runs-on: windows-2022
     timeout-minutes: 40
@@ -234,3 +246,22 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           gh release create "$RELEASE_TAG" release-assets/* --verify-tag --title "图迹 $RELEASE_TAG · Windows 安装包" --notes-file docs/WINDOWS_RELEASE_NOTES.md
+
+  archive_release:
+    name: Archive existing verified installers and logs
+    if: github.event_name == 'workflow_dispatch' && inputs.archive_release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and publish retained installers and logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          MACOS_RUN_ID: ${{ inputs.macos_run_id }}
+          WINDOWS_RUN_ID: ${{ inputs.windows_run_id }}
+        run: python3 scripts/archive_release.py
