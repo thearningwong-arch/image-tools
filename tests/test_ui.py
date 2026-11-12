@@ -5,14 +5,17 @@ import csv
 import os
 from pathlib import Path
 import shutil
+import sys
 import threading
 import time
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image, ImageDraw
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QFrame, QLabel, QLineEdit, QPushButton
 
@@ -103,7 +106,7 @@ def test_desktop_scan_search_actions_export_and_reopen(window, tmp_path, monkeyp
     buttons = {button.text(): button for button in card.findChildren(QPushButton)}
     click(buttons["复制路径"])
     assert app.clipboard().text() == displayed_path
-    click(buttons["资源管理器中定位"])
+    click(buttons["Finder 中定位" if sys.platform == "darwin" else "资源管理器中定位"])
     click(buttons["打开文件夹"])
     assert located == [Path(displayed_path)]
     assert opened == [Path(displayed_path).parent]
@@ -214,7 +217,10 @@ def test_cancel_search_is_not_an_error_and_mutations_are_blocked(window, tmp_pat
     assert window.search_mode.isEnabled()
 
 
-def test_close_waits_for_worker_cancellation_without_destroying_thread(window, tmp_path, monkeypatch):
+@pytest.mark.parametrize("close_method", ["window", "mac_menu"])
+def test_close_waits_for_worker_cancellation_without_destroying_thread(window, tmp_path, monkeypatch, close_method):
+    if close_method == "mac_menu" and not hasattr(window, "quit_action"):
+        window._build_mac_menu()
     query = tmp_path / "query.png"
     artwork().save(query)
     window._set_query(query)
@@ -229,9 +235,56 @@ def test_close_waits_for_worker_cancellation_without_destroying_thread(window, t
     monkeypatch.setattr(window.library, "search", cancellable)
     click(window.search_button)
     wait_until(started.is_set)
-    assert not window.close()
+    if close_method == "mac_menu":
+        assert not window.query_action.isEnabled()
+        assert not window.add_folder_action.isEnabled()
+        assert not window.export_action.isEnabled()
+        window.quit_action.trigger()
+        assert window._close_requested
+    else:
+        assert not window.close()
     wait_until(lambda: window._worker is None and not window.isVisible())
     assert not window.errors
+
+
+def test_macos_menu_opens_query_and_folder_and_keeps_export_unavailable_without_results(app, tmp_path, monkeypatch):
+    monkeypatch.setattr(ui, "sys", SimpleNamespace(platform="darwin"))
+    library = Library(tmp_path / "index.sqlite3", tmp_path / "thumbnails")
+    desktop = ui.MainWindow(library)
+    try:
+        query = tmp_path / "查询图片.png"
+        artwork().save(query)
+        root = tmp_path / "素材库"
+        root.mkdir()
+        monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args, **kwargs: (str(query), ""))
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args, **kwargs: str(root))
+        desktop.query_action.trigger()
+        desktop.add_folder_action.trigger()
+        assert desktop._query == query
+        assert desktop._folders == [str(root.resolve())]
+        assert not desktop.export_action.isEnabled()
+        assert desktop.query_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Open)
+        assert desktop.close_action.shortcut() == QKeySequence(QKeySequence.StandardKey.Close)
+        assert desktop.quit_action.menuRole() == QAction.MenuRole.QuitRole
+    finally:
+        desktop.close()
+
+
+def test_macos_result_reveals_in_finder(window, tmp_path, monkeypatch):
+    source = tmp_path / "参考.png"
+    artwork().save(source)
+    window.library.scan([tmp_path])
+    result = window.library.search(source)[0]
+    monkeypatch.setattr(ui, "sys", SimpleNamespace(platform="darwin"))
+    located = []
+    monkeypatch.setattr(ui, "reveal_file", located.append)
+    card = window._result_card(result)
+    try:
+        buttons = {button.text(): button for button in card.findChildren(QPushButton)}
+        click(buttons["Finder 中定位"])
+        assert located == [source.resolve()]
+    finally:
+        card.deleteLater()
 
 
 def test_supported_query_extensions_match_renderer(window, tmp_path):

@@ -1,6 +1,6 @@
 # 图迹 · Image Tools
 
-在自己的 Windows 10/11 电脑上，以图片查找本地的相同图片、外观相近图片，以及画面匹配的 PSD、PSB、AI、EPS、PDF 源文件候选。也可以用任意位置的局部截图查找包含它的完整图片或画板。结果包含缩略图、文件名、完整路径和匹配页，可直接在资源管理器中定位文件。
+在自己的 Windows 或 Mac 电脑上，以图片查找本地的相同图片、外观相近图片，以及画面匹配的 PSD、PSB、AI、EPS、PDF 源文件候选。也可以用任意位置的局部截图查找包含它的完整图片或画板。结果包含缩略图、文件名、完整路径和匹配页，可直接在资源管理器或 Finder 中定位文件。
 
 图片、缩略图和索引均留在本机。首次安装下载软件依赖；使用时不需要账号、联网服务或 API 密钥。
 
@@ -31,6 +31,16 @@ py -3 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe -m image_tools
 ```
+
+## 在 Mac 上使用
+
+Mac 版沿用相同的本地索引、整图/局部截图检索、源文件预览和 CSV 导出。当前固定依赖要求 **macOS 14 或更新版本**。提供 Apple 芯片（`arm64`）和 Intel（`x86_64`）两种独立构建；在苹果菜单“关于本机”中确认机型后选择对应版本。
+
+构建通过后生成 DMG 安装镜像和 `.sha256` 校验文件。打开镜像，将 `ImageTools.app` 拖到“应用程序”，推出镜像后从“应用程序”打开图迹；使用安装包不需要另外安装 Python。当前分支补齐了 Mac 构建流程，是否已有可下载安装包及原生测试结果，以 [Actions](https://github.com/thearningwong-arch/image-tools/actions) 和 [Releases](https://github.com/thearningwong-arch/image-tools/releases) 中的实际产物为准。
+
+Mac 索引位于 `~/Library/Application Support/ImageTools`。替换或移除应用会保留此目录及原素材；升级前关闭图迹再替换应用。首次访问桌面、文稿、下载、外置磁盘或网络卷时，按 macOS 提示授权。Finder 已挂载并可读取的共享卷可以添加为素材目录。
+
+开发者可在 macOS 14+ 安装 Python 3.12–3.15 后双击 `start-macos.command` 从源码运行，首次启动会创建独立环境并安装依赖；也可使用下文命令。在 Mac 构建机上运行 `bash scripts/build_macos.sh`（或双击 `build-macos.command`）生成安装镜像。签名、公证、Ghostscript、权限与完整验收步骤见 [Mac 版安装与构建说明](docs/MACOS.md)。
 
 ## 支持范围
 
@@ -88,10 +98,10 @@ CSV 保留原有列，增加“命中左/上/右/下边界（0-1）”四列；�
 
 ## 索引与原文件
 
-- Windows 默认索引位置：`%LOCALAPPDATA%\ImageTools`，包含 SQLite 数据库及 JPEG 缩略图。
+- Windows 默认索引位置：`%LOCALAPPDATA%\ImageTools`；Mac 为 `~/Library/Application Support/ImageTools`。目录包含 SQLite 数据库及 JPEG 缩略图。
 - 添加和移除索引文件夹均不会移动、修改或删除原文件。
 - 支持多个文件夹和重叠目录，结果不会因重复扫描同一路径而重复列出。
-- 磁盘或网络共享离线时保留已有索引；扫描问题列表会提示不可访问。失效路径无法在资源管理器中打开，磁盘恢复后可重新扫描。
+- 磁盘或网络共享离线时保留已有索引；扫描问题列表会提示不可访问。失效路径无法在资源管理器或 Finder 中打开，磁盘恢复后可重新扫描。
 - 索引含文件路径和缩略图，需要清除时先关闭程序，再删除索引目录。无需删除素材。
 - 可使用 `--data-dir D:\ImageToolsIndex`，或环境变量 `IMAGE_TOOLS_DATA_DIR` 更改索引位置。
 
@@ -130,8 +140,8 @@ python3 -m venv .venv
 .venv/bin/python -m image_tools
 ```
 
-Linux 无显示服务器时使用 `QT_QPA_PLATFORM=offscreen` 运行 UI 自动化检查。运行桌面界面需本地显示会话。macOS 使用 Finder 定位，Linux 打开所在目录；主要目标平台为 Windows。
+Linux 无显示服务器时使用 `QT_QPA_PLATFORM=offscreen` 运行 UI 自动化检查。运行桌面界面需本地显示会话。macOS 使用 Finder 定位，Linux 打开所在目录。Mac 原生安装包需在对应架构的 Mac 上构建和验证；Linux 检查不能替代这一步。
 
 代码分为 `rendering.py`（文档预览）、`features.py`（整图描述与比较）、`partial.py`（局部定位与多尺度验证）、`library.py`（SQLite 增量索引与检索）、`ui.py`（桌面交互）和 `platform_utils.py`（文件管理器操作）。测试包括真正的文档渲染、索引更新/删除/取消、相似与局部检索、旧索引兼容和桌面工作流。
 
-0.2.0 本次验证为 **92 项测试通过，无失败或跳过**。详细覆盖范围与 Windows 待验收事项见 [开发与验收记录](docs/VALIDATION.md)。
+0.2.0 历史验证为 **92 项测试通过，无失败或跳过**。Mac 版新增流程与本次实际验证结果见 [开发与验收记录](docs/VALIDATION.md)。

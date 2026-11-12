@@ -1,0 +1,78 @@
+name: macOS application
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: Build and test macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            python-arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+            python-arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: ${{ matrix.python-arch }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Check native architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          python -c 'import os, platform; assert platform.machine() == os.environ["EXPECTED_ARCH"], platform.machine()'
+      - name: Install optional PostScript renderer
+        run: brew install ghostscript
+      - name: Build app, test installed bundle and package DMG
+        shell: bash
+        env:
+          IMAGE_TOOLS_PYTHON: python
+        run: |
+          set -o pipefail
+          mkdir -p build/test-results
+          bash scripts/build_macos.sh 2>&1 | tee build/test-results/macos-build.log
+      - name: Upload tested disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageTools-macos-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macOS-validation-${{ matrix.arch }}
+          path: |
+            build/test-results/**
+            build/macos/*.json
+            build/macos/*.xml
+            build/macos/*.log
+            build/macos/validation/**/*.json
+            build/macos/validation/**/*.log
+          if-no-files-found: warn
+          retention-days: 30

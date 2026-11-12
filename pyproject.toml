@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pyinstaller>=6.11,<7"]
+dev = ["pytest>=8,<10", "pyinstaller>=6.11,<7", "macholib>=1.16.4,<2"]
 
 [project.scripts]
 image-tools = "image_tools.__main__:main"
